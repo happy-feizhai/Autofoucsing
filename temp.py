@@ -524,7 +524,7 @@ def detect_pupil_contour(img: np.ndarray) -> Optional[Tuple[int, int, int]]:
             # print(f"{thresh_val}拟合圆执行时间: {(end - start) * 1000:.2f} ms")
 
 
-            if radius < r_threshold or radius > 2 * r_threshold:  # 半径范围检查
+            if radius < r_threshold or radius > 2.5 * r_threshold:  # 半径范围检查
                 continue
 
             # 计算轮廓质量得分
@@ -633,10 +633,12 @@ class PupilCameraViewer(QWidget):
         self.detection_lock = threading.Lock()
         self.is_detecting = False
         self.stop_detection = False
+        self.pupil_alignment_lock = threading.Lock()
 
         # 电机控制线程池
         self.motor_threads = []
         self.motor_lock = threading.Lock()
+
 
         # 性能统计
         self.frame_count = 0
@@ -826,7 +828,7 @@ class PupilCameraViewer(QWidget):
         # 右侧图像显示区域
         image_layout = QVBoxLayout()
 
-        self.image_label = QLabel()
+        self.image_label = ClickableImageLabel(parent=self)
         self.image_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.image_label.setAlignment(Qt.AlignCenter)
         self.image_label.setStyleSheet("QLabel { background-color: #f0f0f0; border: 2px solid #ccc; }")
@@ -1097,44 +1099,47 @@ class PupilCameraViewer(QWidget):
                 f"Y偏差: {error_y:.1f} 像素\n"
                 f"状态: 已对准"
             )
+            self.pupil_alignment_mode = not self.pupil_alignment_mode
+            self.pupil_align_button.setText("开始瞳孔对齐")
+            self.pupil_align_button.setStyleSheet("QPushButton { background-color: #2196F3; color: white; }")
             return
 
         # 清理已完成的线程
         self.motor_threads = [t for t in self.motor_threads if t.is_alive()]
 
         # X轴控制（非阻塞）
-        if not self.x_aligned and len(self.motor_threads) < 4:  # 限制并发线程数
+        if not self.x_aligned and len(self.motor_threads) < 2:  # 限制并发线程数
             control_x = self.pid_x.update(error_x)
             move_x_mm = int(control_x * self.pixel_to_mm_ratio * 20000)
             print(f"x方向控制量:{control_x} 像素")
-            # def move_x():
-            #     with self.motor_lock:
-            #         try:
-            #             self.motor_controller.move_x_to_relative(move_x_mm)
-            #         except Exception as e:
-            #             print(f"X轴移动错误: {e}")
-            #
-            # t = threading.Thread(target=move_x, daemon=True)
-            # t.start()
-            # self.motor_threads.append(t)
-            self.motor_controller.move_y_to_relative(move_x_mm)
+            def move_x():
+                with self.motor_lock:
+                    try:
+                        self.motor_controller.move_x_to_relative(move_x_mm)
+                    except Exception as e:
+                        print(f"X轴移动错误: {e}")
+
+            t = threading.Thread(target=move_x, daemon=True)
+            t.start()
+            self.motor_threads.append(t)
+            # self.motor_controller.move_x_to_relative(move_x_mm)
 
         # Y轴控制（非阻塞）
-        if not self.y_aligned and len(self.motor_threads) < 4:
+        if not self.y_aligned and len(self.motor_threads) < 2:
             control_y = self.pid_y.update(error_y)
             move_y_mm = int(control_y * self.pixel_to_mm_ratio * 6300)
             print(f"x方向控制量:{control_y} 像素")
-            # def move_y():
-            #     with self.motor_lock:
-            #         try:
-            #             self.motor_controller.move_y_to_relative(-move_y_mm)
-            #         except Exception as e:
-            #             print(f"Y轴移动错误: {e}")
-            #
-            # t = threading.Thread(target=move_y, daemon=True)
-            # t.start()
-            # self.motor_threads.append(t)
-            self.motor_controller.move_y_to_relative(-move_y_mm)
+            def move_y():
+                with self.motor_lock:
+                    try:
+                        self.motor_controller.move_y_to_relative(-move_y_mm)
+                    except Exception as e:
+                        print(f"Y轴移动错误: {e}")
+
+            t = threading.Thread(target=move_y, daemon=True)
+            t.start()
+            self.motor_threads.append(t)
+            # self.motor_controller.move_y_to_relative(-move_y_mm)
 
         # 更新状态显示
         x_status = "已对准" if self.x_aligned else "调整中"
@@ -1155,11 +1160,11 @@ class PupilCameraViewer(QWidget):
         # 控制参数
         speed_factor = 1.5  # 速度系数，可以调整
         dead_zone = 50  # 死区大小（像素）
-        max_speed = 5000  # 最大速度
+        max_speed = 800  # 最大速度
 
         # 计算相对于图像中心的偏差
-        image_center_x = 1024  # 根据你的相机分辨率调整
-        image_center_y = 1024
+        image_center_x = self.image_label.size().width() / 2
+        image_center_y = self.image_label.size().height() / 2
 
         error_x = target_x - image_center_x
         error_y = target_y - image_center_y
@@ -1181,12 +1186,12 @@ class PupilCameraViewer(QWidget):
         # 发送移动指令
         try:
             if speed_x != 0:
-                self.motor_controller.move_x_go_speed(int(speed_x))
-                print(f"X轴移动速度: {int(speed_x)}")
+                self.motor_controller.move_x_go_speed(int(-speed_x))
+                print(f"X轴移动速度: {int(-speed_x)}")
 
             if speed_y != 0:
-                self.motor_controller.move_y_go_speed(int(-speed_y))  # Y轴可能需要反向
-                print(f"Y轴移动速度: {int(-speed_y)}")
+                self.motor_controller.move_y_go_speed(int(speed_y))  # Y轴可能需要反向
+                print(f"Y轴移动速度: {int(speed_y)}")
 
             print(f"鼠标控制开始 - 目标位置: ({target_x:.1f}, {target_y:.1f})")
 
@@ -1266,7 +1271,16 @@ class PupilCameraViewer(QWidget):
 
             # 如果开启了对齐模式，执行非阻塞对齐
             if self.pupil_alignment_mode:
-                self.perform_alignment_nonblocking(x, y)
+                # def alignment():
+                #     #with self.pupil_alignment_lock:
+                #     try:
+                #         self.perform_alignment_nonblocking(x, y)
+                #     except Exception as e:
+                #         print(f"对齐错误：{e}")
+
+                t = threading.Thread(self.perform_alignment_nonblocking(x, y), daemon=True)
+                t.start()
+                # self.perform_alignment_nonblocking(x, y)
         else:
             self.current_pupil_position = None
             self.display_normal_image(result.image)
