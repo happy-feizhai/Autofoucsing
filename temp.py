@@ -28,6 +28,92 @@ else:
 os.environ['QT_QPA_PLATFORM_PLUGIN_PATH'] = plugin_path
 
 
+# ============窗口滑动类===========
+# 在文件开头，QTimer, Qt 导入之后添加这个类：
+
+class ClickableImageLabel(QLabel):
+    """可点击的图像标签，支持鼠标长按事件"""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.parent_viewer = parent
+        self.setMouseTracking(True)
+        self.is_pressed = False
+
+    def mousePressEvent(self, event):
+        """鼠标按下事件"""
+        if event.button() == Qt.LeftButton and self.parent_viewer:
+            # 获取点击位置
+            pos = event.pos()
+
+            # 转换为图像坐标
+            label_size = self.size()
+            pixmap = self.pixmap()
+
+            if pixmap:
+                # 计算图像在标签中的实际位置和大小
+                pixmap_size = pixmap.size()
+
+                # 计算缩放比例
+                scale_x = pixmap_size.width() / label_size.width()
+                scale_y = pixmap_size.height() / label_size.height()
+                scale = max(scale_x, scale_y)
+
+                # 计算实际显示大小
+                display_width = pixmap_size.width() / scale
+                display_height = pixmap_size.height() / scale
+
+                # 计算偏移量（居中显示）
+                offset_x = (label_size.width() - display_width) / 2
+                offset_y = (label_size.height() - display_height) / 2
+
+                # 转换点击坐标到图像坐标
+                img_x = (pos.x() - offset_x) * scale
+                img_y = (pos.y() - offset_y) * scale
+
+                # 确保坐标在有效范围内
+                if 0 <= img_x <= pixmap_size.width() and 0 <= img_y <= pixmap_size.height():
+                    self.parent_viewer.start_mouse_control(img_x, img_y)
+                    self.is_pressed = True
+
+    def mouseReleaseEvent(self, event):
+        """鼠标释放事件"""
+        if event.button() == Qt.LeftButton and self.is_pressed:
+            self.is_pressed = False
+            if self.parent_viewer:
+                self.parent_viewer.stop_mouse_control()
+
+    def mouseMoveEvent(self, event):
+        """鼠标移动事件 - 可选，用于拖动时实时更新"""
+        if self.is_pressed and self.parent_viewer:
+            pos = event.pos()
+
+            # 转换为图像坐标（使用相同的转换逻辑）
+            label_size = self.size()
+            pixmap = self.pixmap()
+
+            if pixmap:
+                pixmap_size = pixmap.size()
+                scale_x = pixmap_size.width() / label_size.width()
+                scale_y = pixmap_size.height() / label_size.height()
+                scale = max(scale_x, scale_y)
+
+                display_width = pixmap_size.width() / scale
+                display_height = pixmap_size.height() / scale
+
+                offset_x = (label_size.width() - display_width) / 2
+                offset_y = (label_size.height() - display_height) / 2
+
+                img_x = (pos.x() - offset_x) * scale
+                img_y = (pos.y() - offset_y) * scale
+
+                if 0 <= img_x <= pixmap_size.width() and 0 <= img_y <= pixmap_size.height():
+                    # 先停止当前移动
+                    self.parent_viewer.stop_mouse_control()
+                    # 开始新的移动
+                    self.parent_viewer.start_mouse_control(img_x, img_y)
+
+
 # ========== PID控制器类 ==========
 class PIDController:
     """PID控制器"""
@@ -1061,17 +1147,61 @@ class PupilCameraViewer(QWidget):
             f"活动线程数: {len([t for t in self.motor_threads if t.is_alive()])}"
         )
 
+    def start_mouse_control(self, target_x, target_y):
+        """开始鼠标控制 - 发送一次移动指令"""
+        if self.camera is None or self.motor_controller is None:
+            return
 
-        # 更新状态显示
-        x_status = "已对准" if self.x_aligned else "调整中"
-        y_status = "已对准" if self.y_aligned else "调整中"
+        # 控制参数
+        speed_factor = 1.5  # 速度系数，可以调整
+        dead_zone = 50  # 死区大小（像素）
+        max_speed = 5000  # 最大速度
 
-        # self.alignment_status_text.setText(
-        #     f"正在对齐...\n"
-        #     f"X偏差: {error_x:.1f} 像素 - {x_status}\n"
-        #     f"Y偏差: {error_y:.1f} 像素 - {y_status}\n"
-        #     f"电机位置: X={self.motor_controller.get_x_position():.3f}, Y={self.motor_controller.get_y_position():.3f}"
-        # )
+        # 计算相对于图像中心的偏差
+        image_center_x = 1024  # 根据你的相机分辨率调整
+        image_center_y = 1024
+
+        error_x = target_x - image_center_x
+        error_y = target_y - image_center_y
+
+        # 计算速度（比例控制）
+        speed_x = error_x * speed_factor
+        speed_y = error_y * speed_factor
+
+        # 限制最大速度
+        speed_x = max(-max_speed, min(max_speed, speed_x))
+        speed_y = max(-max_speed, min(max_speed, speed_y))
+
+        # 应用死区
+        if abs(error_x) < dead_zone:
+            speed_x = 0
+        if abs(error_y) < dead_zone:
+            speed_y = 0
+
+        # 发送移动指令
+        try:
+            if speed_x != 0:
+                self.motor_controller.move_x_go_speed(int(speed_x))
+                print(f"X轴移动速度: {int(speed_x)}")
+
+            if speed_y != 0:
+                self.motor_controller.move_y_go_speed(int(-speed_y))  # Y轴可能需要反向
+                print(f"Y轴移动速度: {int(-speed_y)}")
+
+            print(f"鼠标控制开始 - 目标位置: ({target_x:.1f}, {target_y:.1f})")
+
+        except Exception as e:
+            print(f"鼠标控制启动错误: {e}")
+
+    def stop_mouse_control(self):
+        """停止鼠标控制 - 发送停止指令"""
+        if self.motor_controller:
+            try:
+                self.motor_controller.stop_x()
+                self.motor_controller.stop_y()
+                print("鼠标控制停止")
+            except Exception as e:
+                print(f"停止电机错误: {e}")
 
     def update_frame(self):
         """更新相机画面 - 主线程负责获取所有图像"""
@@ -1195,6 +1325,7 @@ class PupilCameraViewer(QWidget):
 
     def closeEvent(self, event):
         """窗口关闭事件"""
+        self.stop_mouse_control()
         self.close_camera()
         event.accept()
 
