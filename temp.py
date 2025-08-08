@@ -613,7 +613,7 @@ class PupilCameraViewer(QWidget):
         # 瞳孔位置相关
         self.current_pupil_position = None  # 当前瞳孔位置 (x, y)
         self.target_pupil_position = (1024, 1024)  # 理论瞳孔位置（默认图像中心）
-        self.pixel_to_mm_ratio = 0.022  # 像素到毫米的转换比例（需要根据实际系统标定）
+        self.pixel_to_mm_ratio = 0.0106  # 像素到毫米的转换比例（需要根据实际系统标定）
 
         # PID控制器
         self.pid_x = PIDController(Kp=1, Ki=0.2, Kd=0.5)
@@ -1105,10 +1105,8 @@ class PupilCameraViewer(QWidget):
             return
 
         # 清理已完成的线程
-        control_x = self.pid_x.update(error_x)
-        move_x_mm = int(control_x * self.pixel_to_mm_ratio * 20000)
-        control_y = self.pid_y.update(error_y)
-        move_y_mm = int(control_y * self.pixel_to_mm_ratio * 6300)
+        move_x_mm = int(error_x * self.pixel_to_mm_ratio * 20000)
+        move_y_mm = int(error_y * self.pixel_to_mm_ratio * 6335)
         self.motor_controller.move_x_to_relative(move_x_mm)
         self.motor_controller.move_y_to_relative(-move_y_mm)
 
