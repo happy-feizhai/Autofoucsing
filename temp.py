@@ -1105,41 +1105,16 @@ class PupilCameraViewer(QWidget):
             return
 
         # 清理已完成的线程
-        self.motor_threads = [t for t in self.motor_threads if t.is_alive()]
+        control_x = self.pid_x.update(error_x)
+        move_x_mm = int(control_x * self.pixel_to_mm_ratio * 20000)
+        control_y = self.pid_y.update(error_y)
+        move_y_mm = int(control_y * self.pixel_to_mm_ratio * 6300)
+        self.motor_controller.move_x_to_relative(move_x_mm)
+        self.motor_controller.move_y_to_relative(-move_y_mm)
 
-        # X轴控制（非阻塞）
-        if not self.x_aligned and len(self.motor_threads) < 2:  # 限制并发线程数
-            control_x = self.pid_x.update(error_x)
-            move_x_mm = int(control_x * self.pixel_to_mm_ratio * 20000)
-            print(f"x方向控制量:{control_x} 像素")
-            def move_x():
-                with self.motor_lock:
-                    try:
-                        self.motor_controller.move_x_to_relative(move_x_mm)
-                    except Exception as e:
-                        print(f"X轴移动错误: {e}")
-
-            t = threading.Thread(target=move_x, daemon=True)
-            t.start()
-            self.motor_threads.append(t)
-            # self.motor_controller.move_x_to_relative(move_x_mm)
-
-        # Y轴控制（非阻塞）
-        if not self.y_aligned and len(self.motor_threads) < 2:
-            control_y = self.pid_y.update(error_y)
-            move_y_mm = int(control_y * self.pixel_to_mm_ratio * 6300)
-            print(f"x方向控制量:{control_y} 像素")
-            def move_y():
-                with self.motor_lock:
-                    try:
-                        self.motor_controller.move_y_to_relative(-move_y_mm)
-                    except Exception as e:
-                        print(f"Y轴移动错误: {e}")
-
-            t = threading.Thread(target=move_y, daemon=True)
-            t.start()
-            self.motor_threads.append(t)
-            # self.motor_controller.move_y_to_relative(-move_y_mm)
+        self.pupil_alignment_mode = not self.pupil_alignment_mode
+        self.pupil_align_button.setText("开始瞳孔对齐")
+        self.pupil_align_button.setStyleSheet("QPushButton { background-color: #2196F3; color: white; }")
 
         # 更新状态显示
         x_status = "已对准" if self.x_aligned else "调整中"
