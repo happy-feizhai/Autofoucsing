@@ -1244,13 +1244,6 @@ class PupilCameraViewer(QWidget):
 
             # 如果开启了对齐模式，执行非阻塞对齐
             if self.pupil_alignment_mode:
-                # def alignment():
-                #     #with self.pupil_alignment_lock:
-                #     try:
-                #         self.perform_alignment_nonblocking(x, y)
-                #     except Exception as e:
-                #         print(f"对齐错误：{e}")
-
                 t = threading.Thread(self.perform_alignment_nonblocking(x, y), daemon=True)
                 t.start()
                 # self.perform_alignment_nonblocking(x, y)
