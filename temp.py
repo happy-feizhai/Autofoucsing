@@ -654,90 +654,101 @@ class PupilCameraViewer(QWidget):
         self.setup_ui()
 
     def setup_ui(self):
-        """设置用户界面"""
+        """设置用户界面 - 两列布局版本"""
         main_layout = QHBoxLayout()
 
-        # 左侧控制面板
-        control_panel = QVBoxLayout()
-        control_panel.setSpacing(10)
+        # ========== 左侧控制区域（两列布局） ==========
+        control_container = QWidget()
+        control_container.setMaximumWidth(800)  # 增加宽度以容纳两列
+
+        # 创建两列布局
+        two_column_layout = QHBoxLayout()
+
+        # ========== 第一列：相机参数和控制 ==========
+        left_column = QVBoxLayout()
+        left_column.setSpacing(10)
 
         # 相机参数控制
-        control_panel.addWidget(QLabel("=== Camera Parameters Setup ==="))
+        left_column.addWidget(QLabel("=== Camera Parameters Setup ==="))
 
         # 曝光模式
         self.exposure_mode_label = QLabel("Exposure Mode:")
         self.exposure_mode_combo = QComboBox()
         self.exposure_mode_combo.addItems(["Timed", "TriggerWidth"])
-        control_panel.addWidget(self.exposure_mode_label)
-        control_panel.addWidget(self.exposure_mode_combo)
+        left_column.addWidget(self.exposure_mode_label)
+        left_column.addWidget(self.exposure_mode_combo)
 
         # 曝光时间
         self.exposure_time_label = QLabel("Exposure Time (us):")
         self.exposure_time_edit = QLineEdit("10000")
         self.exposure_time_edit.setValidator(QIntValidator(30, 10000000))
-        control_panel.addWidget(self.exposure_time_label)
-        control_panel.addWidget(self.exposure_time_edit)
+        left_column.addWidget(self.exposure_time_label)
+        left_column.addWidget(self.exposure_time_edit)
 
         # 自动曝光
         self.auto_exposure_label = QLabel("Auto Exposure:")
         self.auto_exposure_combo = QComboBox()
         self.auto_exposure_combo.addItems(["Off", "Once", "Continuous"])
-        control_panel.addWidget(self.auto_exposure_label)
-        control_panel.addWidget(self.auto_exposure_combo)
+        left_column.addWidget(self.auto_exposure_label)
+        left_column.addWidget(self.auto_exposure_combo)
 
         # 自动增益
         self.auto_gain_label = QLabel("Auto Gain:")
         self.auto_gain_combo = QComboBox()
         self.auto_gain_combo.addItems(["Off", "Once", "Continuous"])
-        control_panel.addWidget(self.auto_gain_label)
-        control_panel.addWidget(self.auto_gain_combo)
+        left_column.addWidget(self.auto_gain_label)
+        left_column.addWidget(self.auto_gain_combo)
 
         # 增益值
         self.gain_label = QLabel("Gain:")
         self.gain_edit = QLineEdit("0")
         self.gain_edit.setValidator(QIntValidator(0, 23))
-        control_panel.addWidget(self.gain_label)
-        control_panel.addWidget(self.gain_edit)
+        left_column.addWidget(self.gain_label)
+        left_column.addWidget(self.gain_edit)
 
         # 设置参数按钮
         self.set_params_button = QPushButton("Set Parameters")
         self.set_params_button.clicked.connect(self.set_camera_parameters)
-        control_panel.addWidget(self.set_params_button)
+        left_column.addWidget(self.set_params_button)
 
-        control_panel.addWidget(QLabel(""))  # 空行
+        left_column.addWidget(QLabel(""))  # 空行
 
         # 相机控制按钮
-        control_panel.addWidget(QLabel("=== Camera Control ==="))
+        left_column.addWidget(QLabel("=== Camera Control ==="))
 
         self.open_button = QPushButton("Open Camera")
         self.open_button.clicked.connect(self.start_camera)
-        control_panel.addWidget(self.open_button)
+        left_column.addWidget(self.open_button)
 
         self.close_button = QPushButton("Close Camera")
         self.close_button.clicked.connect(self.close_camera)
-        control_panel.addWidget(self.close_button)
+        left_column.addWidget(self.close_button)
 
         self.connect_motor_button = QPushButton("Connect Motor")
         self.connect_motor_button.clicked.connect(self.connect_motor)
-        control_panel.addWidget(self.connect_motor_button)
+        left_column.addWidget(self.connect_motor_button)
 
         # 瞳孔检测按钮
         self.pupil_detect_button = QPushButton("Start Pupil Detection")
         self.pupil_detect_button.clicked.connect(self.toggle_pupil_detection)
         self.pupil_detect_button.setStyleSheet("QPushButton { background-color: #4CAF50; color: white; }")
-        control_panel.addWidget(self.pupil_detect_button)
+        left_column.addWidget(self.pupil_detect_button)
 
         # 瞳孔对齐按钮
         self.pupil_align_button = QPushButton("Start Pupil Alignment")
         self.pupil_align_button.clicked.connect(self.toggle_pupil_alignment)
         self.pupil_align_button.setStyleSheet("QPushButton { background-color: #2196F3; color: white; }")
         self.pupil_align_button.setEnabled(False)  # 初始状态禁用
-        control_panel.addWidget(self.pupil_align_button)
+        left_column.addWidget(self.pupil_align_button)
 
-        control_panel.addWidget(QLabel(""))  # 空行
+        left_column.addStretch()  # 添加弹性空间
+
+        # ========== 第二列：对齐设置和结果 ==========
+        right_column = QVBoxLayout()
+        right_column.setSpacing(10)
 
         # 对齐参数设置
-        control_panel.addWidget(QLabel("=== Alignment Settings ==="))
+        right_column.addWidget(QLabel("=== Alignment Settings ==="))
 
         # 目标位置设置
         target_layout = QHBoxLayout()
@@ -751,7 +762,7 @@ class PupilCameraViewer(QWidget):
         self.target_y_edit.setValidator(QIntValidator(0, 9999))
         self.target_y_edit.textChanged.connect(self.update_target_position)
         target_layout.addWidget(self.target_y_edit)
-        control_panel.addLayout(target_layout)
+        right_column.addLayout(target_layout)
 
         # PID参数设置
         pid_layout = QGridLayout()
@@ -784,48 +795,60 @@ class PupilCameraViewer(QWidget):
         self.pid_y_kd.setValidator(QDoubleValidator(0, 10, 3))
         pid_layout.addWidget(self.pid_y_kd, 2, 3)
 
-        control_panel.addLayout(pid_layout)
+        right_column.addLayout(pid_layout)
 
         # 更新PID参数按钮
         self.update_pid_button = QPushButton("Update PID Parameters")
         self.update_pid_button.clicked.connect(self.update_pid_parameters)
-        control_panel.addWidget(self.update_pid_button)
+        right_column.addWidget(self.update_pid_button)
 
-        control_panel.addWidget(QLabel(""))  # 空行
+        right_column.addWidget(QLabel(""))  # 空行
 
         # 检测结果显示
-        control_panel.addWidget(QLabel("=== Result ==="))
+        right_column.addWidget(QLabel("=== Result ==="))
 
         # 清晰度显示
         self.sharpness_label = QLabel("Sharpness:")
-        control_panel.addWidget(self.sharpness_label)
+        right_column.addWidget(self.sharpness_label)
 
         self.sharpness_text = QTextEdit()
         self.sharpness_text.setMaximumHeight(60)
         self.sharpness_text.setReadOnly(True)
-        control_panel.addWidget(self.sharpness_text)
+        right_column.addWidget(self.sharpness_text)
 
         # 瞳孔信息显示
         self.pupil_info_label = QLabel("Pupil Info:")
-        control_panel.addWidget(self.pupil_info_label)
+        right_column.addWidget(self.pupil_info_label)
 
         self.pupil_info_text = QTextEdit()
         self.pupil_info_text.setMaximumHeight(100)
         self.pupil_info_text.setReadOnly(True)
-        control_panel.addWidget(self.pupil_info_text)
+        right_column.addWidget(self.pupil_info_text)
 
         # 对齐状态显示
         self.alignment_status_label = QLabel("Alignment Status:")
-        control_panel.addWidget(self.alignment_status_label)
+        right_column.addWidget(self.alignment_status_label)
 
         self.alignment_status_text = QTextEdit()
         self.alignment_status_text.setMaximumHeight(80)
         self.alignment_status_text.setReadOnly(True)
-        control_panel.addWidget(self.alignment_status_text)
+        right_column.addWidget(self.alignment_status_text)
 
-        control_panel.addStretch()  # 添加弹性空间
+        right_column.addStretch()  # 添加弹性空间
 
-        # 右侧图像显示区域
+        # ========== 组合两列 ==========
+        # 添加分隔线（可选）
+        separator = QFrame()
+        separator.setFrameShape(QFrame.VLine)
+        separator.setFrameShadow(QFrame.Sunken)
+
+        two_column_layout.addLayout(left_column)
+        two_column_layout.addWidget(separator)
+        two_column_layout.addLayout(right_column)
+
+        control_container.setLayout(two_column_layout)
+
+        # ========== 右侧图像显示区域 ==========
         image_layout = QVBoxLayout()
 
         self.image_label = ClickableImageLabel(parent=self)
@@ -835,13 +858,9 @@ class PupilCameraViewer(QWidget):
         self.image_label.setMinimumSize(640, 480)
         image_layout.addWidget(self.image_label)
 
-        # 组合布局
-        control_widget = QWidget()
-        control_widget.setMaximumWidth(400)
-        control_widget.setLayout(control_panel)
-
-        main_layout.addWidget(control_widget)
-        main_layout.addLayout(image_layout, 1)
+        # ========== 组合最终布局 ==========
+        main_layout.addWidget(control_container)
+        main_layout.addLayout(image_layout, 1)  # 图像区域占据剩余空间
 
         self.setLayout(main_layout)
 
