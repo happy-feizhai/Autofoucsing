@@ -163,154 +163,102 @@ class PIDController:
 
 # ========== 电机控制接口类 ==========
 class MotorController:
-    """电机控制接口类 - 需要用户根据实际电机实现这些方法"""
+    """
+    一个简化的多轴电机控制器。
+    通过将轴的配置和方法通用化，减少了代码重复。
+    """
+
+    # 1. 将配置信息提取到类级别的字典中，更清晰且易于管理
+    AXIS_CONFIG = {
+        'x': {
+            'driver': DM2C.Driver_01,
+            'high_speed': 500,
+            'low_speed': 100,
+            'path_speed': 800,
+            'path_accel': 80,
+            'path_decel': 80,
+        },
+        'y': {
+            'driver': DM2C.Driver_02,
+            'high_speed': 500,
+            'low_speed': 100,
+            'path_speed': 800,  # 假设与X轴相同，如果不同请修改
+            'path_accel': 80,
+            'path_decel': 80,
+        },
+        'z': {
+            'driver': DM2C.Driver_03,
+            'high_speed': 500,
+            'low_speed': 100,
+            'path_speed': 800,  # 假设与X轴相同，如果不同请修改
+            'path_accel': 80,
+            'path_decel': 80,
+        },
+        # 如果未来有R轴或其他轴，只需在此处添加即可
+        # 'r': { ... }
+    }
+
+    # 其他设备级别的配置
+    SERIAL_PORT = "COM7"
+    BAUDRATE = 115200
 
     def __init__(self):
+        """初始化Modbus连接和所有在配置中定义的轴。"""
+        self.modbus = ModbusRTU(
+            serial.Serial(port=self.SERIAL_PORT, baudrate=self.BAUDRATE, timeout=2, write_timeout=2))
+        self.axes = {}
 
-        # 电机参数配置
-        class Device_Stage(object):
-            X = DM2C.Driver_01
-            Y = DM2C.Driver_02
-            Z = DM2C.Driver_03
-            R = DM2C.Driver_04
-            X_HighSpeed = 500
-            X_LowSpeed = 100
-            Y_HighSpeed = 500
-            Y_LowSpeed = 100
-            Z_HighSpeed = 500
-            Z_LowSpeed = 100
-            R_Speed = 200
-            R_Acceleration = 800
-            R_GoZeroHighSpeed = 100
-            R_GoZeroLowSpeed = 10
-            R_Pulse = 36000
-            # gear ration is 10, so MeridianRatio = R_Pulse / 360 * 10
-            MeridianRatio = 1000
+        # 2. 使用循环来初始化每个轴，避免代码重复
+        for axis_name, config in self.AXIS_CONFIG.items():
+            axis_controller = Stage_LinearMovement(config['driver'])
+            axis_controller.setModbus(self.modbus)
+            axis_controller.reset()
+            # 根据配置设置路径和速度
+            axis_controller.setRelativePositionPath(speed=config['path_speed'], acceleration=config['path_accel'],
+                                                    deceleration=config['path_decel'])
+            axis_controller.setAbsolutePositionPath()
+            axis_controller.setSpeedPath()
+            axis_controller.setJogSpeed(config['low_speed'], config['high_speed'])
 
+            self.axes[axis_name] = axis_controller
 
-        self.serialport = "COM7"
-        self.modbus = ModbusRTU(serial.Serial(port=self.serialport, baudrate=115200, timeout=2, write_timeout=2))
-        self.xaxis = Stage_LinearMovement(DM2C.Driver_01)
-        self.xaxis.setModbus(self.modbus)
-        self.xaxis.reset()
-        self.xaxis.setRelativePositionPath(speed=800, acceleration=80, deceleration=80)
-        self.xaxis.setAbsolutePositionPath()
-        self.xaxis.setSpeedPath()
-        self.xaxis.setJogSpeed(Device_Stage.X_LowSpeed, Device_Stage.X_HighSpeed)
+    def _get_axis(self, axis_name: str):
+        """一个辅助方法，用于获取指定轴的控制器实例并处理错误。"""
+        axis_controller = self.axes.get(axis_name.lower())
+        if not axis_controller:
+            raise ValueError(f"无效的轴: '{axis_name}'. 可用轴: {list(self.axes.keys())}")
+        return axis_controller
 
-        self.yaxis = Stage_LinearMovement(DM2C.Driver_02)
-        self.yaxis.setModbus(self.modbus)
-        self.yaxis.reset()
-        self.yaxis.setRelativePositionPath()
-        self.yaxis.setAbsolutePositionPath()
-        self.yaxis.setSpeedPath()
-        self.yaxis.setJogSpeed(Device_Stage.Y_LowSpeed, Device_Stage.Y_HighSpeed)
+    # 3. 合并重复的方法
+    def get_position(self, axis_name: str) -> float:
+        """获取指定轴电机的当前位置（单位：mm）。"""
+        return self._get_axis(axis_name).Position()
 
-        self.zaxis = Stage_LinearMovement(DM2C.Driver_03)
-        self.zaxis.setModbus(self.modbus)
-        self.zaxis.reset()
-        self.zaxis.setRelativePositionPath()
-        self.zaxis.setAbsolutePositionPath()
-        self.zaxis.setSpeedPath()
-        self.zaxis.setJogSpeed(Device_Stage.Z_LowSpeed, Device_Stage.Z_HighSpeed)
+    def move_to_absolute(self, axis_name: str, position: float):
+        """移动指定轴电机到绝对位置（单位：mm）。"""
+        print(f"Moving {axis_name.upper()} motor to absolute position: {position:.3f} mm")
+        self._get_axis(axis_name).goAbsolutePosition(position)
 
-    def get_x_position(self):
-        """获取X轴电机当前位置（单位：mm）
-        实际使用时，请替换为真实的电机位置读取函数
-        """
-        return self.xaxis.Position()
+    def move_to_relative(self, axis_name: str, distance: float):
+        """相对移动指定轴电机一定距离（单位：mm）。"""
+        print(f"Moving {axis_name.upper()} motor by relative distance: {distance:.3f} mm")
+        self._get_axis(axis_name).goRelativePosition(distance)
 
-    def get_y_position(self):
-        """获取y轴电机当前位置（单位：mm）
-        实际使用时，请替换为真实的电机位置读取函数
-        """
-        return self.yaxis.Position()
+    def go_speed(self, axis_name: str, speed: float):
+        """驱动指定轴电机按指定速度移动。"""
+        print(f"Moving {axis_name.upper()} motor at speed: {speed}")
+        self._get_axis(axis_name).goSpeed(speed)
 
-    def get_z_position(self):
-        """获取Y轴电机当前位置（单位：mm）
-        实际使用时，请替换为真实的电机位置读取函数
-        """
-        return self.zaxis.Position()
+    def stop(self, axis_name: str):
+        """紧急停止指定轴的电机。"""
+        print(f"Stopping {axis_name.upper()} motor")
+        self._get_axis(axis_name).stop()
 
-    def move_x_to_absolute(self, position):
-        """移动X轴电机到绝对位置（单位：mm）
-        实际使用时，请替换为真实的电机移动函数
-        """
-        print(f"Moving X motor to absolute position: {position:.3f} mm")
-        self.xaxis.goAbsolutePosition(position)
-
-    def move_y_to_absolute(self, position):
-        """移动y轴电机到绝对位置（单位：mm）
-        实际使用时，请替换为真实的电机移动函数
-        """
-        print(f"Moving Y motor to absolute position: {position:.3f} mm")
-        self.yaxis.goAbsolutePosition(position)
-
-    def move_z_to_absolute(self, position):
-        """移动Z轴电机到绝对位置（单位：mm）
-        实际使用时，请替换为真实的电机移动函数
-        """
-        print(f"Moving Z motor to absolute position: {position:.3f} mm")
-        self.zaxis.goAbsolutePosition(position)
-
-    def move_x_to_relative(self, position):
-        """移动x轴电机到相对位置（单位：mm）
-        """
-        print(f"Moving X motor : {position:.3f}mm")
-        self.xaxis.goRelativePosition(position)
-
-    def move_y_to_relative(self, position):
-        """移动y轴电机到相对位置（单位：mm）
-        """
-        print(f"Moving Y motor : {position:.3f}mm")
-        self.yaxis.goRelativePosition(position)
-
-    def move_z_to_relative(self, position):
-        """移动z轴电机到相对位置（单位：mm）
-        """
-        print(f"Moving Z motor : {position:.3f}mm")
-        self.zaxis.goRelativePosition(position)
-
-    def move_x_go_speed(self, speed):
-        """驱动x电机按指定速度移动
-        """
-        print(f"Moving X motor at speed: {speed}")
-        self.xaxis.goSpeed(speed)
-
-    def move_y_go_speed(self, speed):
-        """驱动x电机按指定速度移动
-        """
-        print(f"Moving Y motor at speed: {speed}")
-        self.yaxis.goSpeed(speed)
-
-    def move_z_go_speed(self, speed):
-        """驱动y电机按指定速度移动
-        """
-        print(f"Moving Z motor at speed: {speed}")
-        self.zaxis.goSpeed(speed)
-
-
-    def stop_x(self):
-        """
-        X轴电机急停
-        """
-        self.xaxis.stop()
-        print("Stopping X motor")
-
-    def stop_y(self):
-        """
-        Y轴电机急停
-        """
-        self.yaxis.stop()
-        print("Stopping Y motor")
-
-
-    def stop_z(self):
-        """
-        Z轴电机急停
-        """
-        self.zaxis.stop()
-        print("Stopping Z motor")
+    def stop_all(self):
+        """紧急停止所有轴的电机。"""
+        print("Stopping all motors")
+        for axis_name in self.axes:
+            self.stop(axis_name)
 
 
 
@@ -1222,8 +1170,8 @@ class PupilCameraViewer(QWidget):
         # 清理已完成的线程
         move_x_mm = int(error_x * self.pixel_to_mm_ratio * 20000)
         move_z_mm = int(error_y * self.pixel_to_mm_ratio * 6335)
-        self.motor_controller.move_x_to_relative(move_x_mm)
-        self.motor_controller.move_z_to_relative(-move_z_mm)
+        self.motor_controller.move_to_relative("x", move_x_mm)
+        self.motor_controller.move_to_relative("z", -move_z_mm)
 
         self.pupil_alignment_mode = not self.pupil_alignment_mode
         self.pupil_align_button.setText("开始瞳孔对齐")
@@ -1242,14 +1190,14 @@ class PupilCameraViewer(QWidget):
         #     def move_x():
         #         with self.motor_lock:
         #             try:
-        #                 self.motor_controller.move_x_to_relative(move_x_mm)
+        #                 self.motor_controller.move_to_relative("x", move_x_mm)
         #             except Exception as e:
         #                 print(f"X轴移动错误: {e}")
         #
         #     t = threading.Thread(target=move_x, daemon=True)
         #     t.start()
         #     self.motor_threads.append(t)
-        #     # self.motor_controller.move_x_to_relative(move_x_mm)
+        #     # self.motor_controller.move_to_relative("x", move_x_mm)
         #
         # # Y轴控制（非阻塞）
         # if not self.y_aligned and len(self.motor_threads) < 2:
@@ -1260,14 +1208,14 @@ class PupilCameraViewer(QWidget):
         #     def move_y():
         #         with self.motor_lock:
         #             try:
-        #                 self.motor_controller.move_y_to_relative(-move_z_mm)
+        #                  self.motor_controller.move_to_relative("z", -move_z_mm)
         #             except Exception as e:
         #                 print(f"Y轴移动错误: {e}")
         #
         #     t = threading.Thread(target=move_y, daemon=True)
         #     t.start()
         #     self.motor_threads.append(t)
-        #     # self.motor_controller.move_y_to_relative(-move_z_mm)
+        #     self.motor_controller.move_to_relative("z", -move_z_mm)
 
         # 更新状态显示
 
@@ -1296,11 +1244,11 @@ class PupilCameraViewer(QWidget):
         image_center_y = self.image_label.size().height() / 2
 
         error_x = target_x - image_center_x
-        error_y = target_y - image_center_y
+        error_z = target_y - image_center_y
 
         # 计算速度（比例控制）
         speed_x = error_x * speed_factor
-        speed_z = error_y * speed_factor
+        speed_z = error_z * speed_factor
 
         # 限制最大速度
         speed_x = max(-max_speed, min(max_speed, speed_x))
@@ -1309,18 +1257,18 @@ class PupilCameraViewer(QWidget):
         # 应用死区
         if abs(error_x) < dead_zone:
             speed_x = 0
-        if abs(error_y) < dead_zone:
+        if abs(error_z) < dead_zone:
             speed_z = 0
 
         # 发送移动指令
         try:
             if speed_x != 0:
-                self.motor_controller.move_x_go_speed(int(-speed_x))
+                self.motor_controller.go_speed("x", int(-speed_x))
                 print(f"X轴移动速度: {int(-speed_x)}")
 
             if speed_z != 0:
-                self.motor_controller.move_z_go_speed(int(speed_z))  # Y轴可能需要反向
-                print(f"Y轴移动速度: {int(speed_z)}")
+                self.motor_controller.go_speed("z", int(speed_z))
+                print(f"Z轴移动速度: {int(speed_z)}")
 
             print(f"鼠标控制开始 - 目标位置: ({target_x:.1f}, {target_y:.1f})")
 
@@ -1331,8 +1279,8 @@ class PupilCameraViewer(QWidget):
         """停止鼠标控制 - 发送停止指令"""
         if self.motor_controller:
             try:
-                self.motor_controller.stop_x()
-                self.motor_controller.stop_z()
+                self.motor_controller.stop("x")
+                self.motor_controller.stop("z")
                 print("鼠标控制停止")
             except Exception as e:
                 print(f"停止电机错误: {e}")
@@ -1492,8 +1440,6 @@ class PupilCameraViewer(QWidget):
             Qt.SmoothTransformation
         )
         self.image_label.setPixmap(scaled_pixmap)
-
-
 
 # ========== 主程序入口 ==========
 if __name__ == "__main__":
