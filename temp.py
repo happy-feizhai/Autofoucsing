@@ -1141,35 +1141,36 @@ class PupilCameraViewer(QWidget):
             self.pupil_align_button.setStyleSheet("QPushButton { background-color: #2196F3; color: white; }")
             self.alignment_status_text.setText("瞳孔对齐模式已关闭")
 
-    def perform_alignment_nonblocking(self, pupil_x, pupil_y):
+    def perform_alignment_nonblocking(self, pupil_x, pupil_z):
         """非阻塞的瞳孔对齐控制"""
-        target_x, target_y = self.target_pupil_position
+        target_x, target_z = self.target_pupil_position
 
         # 计算像素偏差
         error_x = target_x - pupil_x
-        error_y = target_y - pupil_y
+        error_z = target_z - pupil_z
         print(f"x方向偏差:{error_x} 像素"
-              f"y方向变差:{error_y} 像素")
+              f"y方向变差:{error_z} 像素")
 
         # 检查对齐状态
         self.x_aligned = abs(error_x) < self.alignment_tolerance
-        self.y_aligned = abs(error_y) < self.alignment_tolerance
+        self.y_aligned = abs(error_z) < self.alignment_tolerance
 
         if self.x_aligned and self.y_aligned:
             self.alignment_status_text.setText(
                 f"对齐成功！\n"
                 f"X偏差: {error_x:.1f} 像素\n"
-                f"Y偏差: {error_y:.1f} 像素\n"
+                f"Y偏差: {error_z:.1f} 像素\n"
                 f"状态: 已对准"
             )
             self.pupil_alignment_mode = not self.pupil_alignment_mode
             self.pupil_align_button.setText("开始瞳孔对齐")
             self.pupil_align_button.setStyleSheet("QPushButton { background-color: #2196F3; color: white; }")
+            self.motor_controller.stop_all()
             return
 
         # 清理已完成的线程
         move_x_mm = int(error_x * self.pixel_to_mm_ratio * 20000)
-        move_z_mm = int(error_y * self.pixel_to_mm_ratio * 6335)
+        move_z_mm = int(error_z * self.pixel_to_mm_ratio * 6335)
         self.motor_controller.move_to_relative("x", move_x_mm)
         self.motor_controller.move_to_relative("z", -move_z_mm)
 
@@ -1201,7 +1202,7 @@ class PupilCameraViewer(QWidget):
         #
         # # Y轴控制（非阻塞）
         # if not self.y_aligned and len(self.motor_threads) < 2:
-        #     control_y = self.pid_y.update(error_y)
+        #     control_y = self.pid_y.update(error_z)
         #     move_z_mm = int(control_y * self.pixel_to_mm_ratio * 6300)
         #     print(f"x方向控制量:{control_y} 像素")
         #
@@ -1225,7 +1226,7 @@ class PupilCameraViewer(QWidget):
         self.alignment_status_text.setText(
             f"正在对齐...\n"
             f"X偏差: {error_x:.1f} 像素 - {x_status}\n"
-            f"Y偏差: {error_y:.1f} 像素 - {y_status}\n"
+            f"Y偏差: {error_z:.1f} 像素 - {y_status}\n"
             f"活动线程数: {len([t for t in self.motor_threads if t.is_alive()])}"
         )
 
