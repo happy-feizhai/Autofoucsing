@@ -273,6 +273,8 @@ class MotorController:
         print("Stopping Y motor")
 
 
+
+
 # ========== 瞳孔检测相关函数 ==========
 @njit
 def compute_image_sharpness_numba(img: np.ndarray) -> float:
@@ -370,6 +372,53 @@ def evaluate_circle_quality(img: np.ndarray, circle: Tuple[int, int, int]) -> fl
 
     return max(0, contrast)
 
+def extract_lower_iris_roi(img, detected_circle):
+    """
+    方案二：提取瞳孔下方的虹膜区域，完全避开瞳孔和上方睫毛
+    """
+    if detected_circle is None:
+        return None, None
+
+    x, y, radius = detected_circle
+    h, w = img.shape[:2]
+
+    print(f"瞳孔半径：{radius}像素")
+    print(f"瞳孔中心位置:（{x}, {y}）")
+
+    # 虹膜区域通常是瞳孔半径的2-3倍
+    # 我们提取瞳孔下方的一个矩形虹膜区域
+
+    # 横向：瞳孔左右各扩展1.5倍半径（虹膜宽度）
+    # 纵向：从瞳孔边缘下方开始，高度为0.8倍半径
+    iris_width_factor = 1.25
+    roi_height_factor = 0.15
+
+    # 计算ROI边界
+    x1 = max(0, int(x - radius * iris_width_factor))
+    x2 = min(w, int(x + radius * iris_width_factor))
+    y1 = max(0, int(y + radius * 1.01))  # 从瞳孔边缘稍下方开始
+    # y2 = min(h, int(y + radius * (1.05 + roi_height_factor)))
+    y2 =  min(h, int(y + radius * 1.01 + 60))
+
+    # 确保ROI有效
+    if y2 <= y1 or x2 <= x1:
+        print("警告：ROI无效，使用备用方案")
+        # 备用方案：使用瞳孔下方的固定大小区域
+        y1 = max(0, int(y + radius))
+        y2 = min(h, y1 + 100)  # 固定高度100像素
+        x1 = max(0, x - 100)
+        x2 = min(w, x + 100)
+
+    # 提取ROI
+    roi = img[y1:y2, x1:x2]
+
+    # 返回ROI和位置信息
+    roi_info = {
+        'x1': x1, 'y1': y1, 'x2': x2, 'y2': y2,
+        'center': (x, y), 'radius': radius
+    }
+
+    return roi, roi_info
 
 def process_single_threshold(args: Tuple[np.ndarray, int, int]) -> Tuple[Optional[Tuple[int, int, int]], float]:
     """处理单个阈值的函数，用于并行处理"""
@@ -479,11 +528,8 @@ def detect_pupil_contour(img: np.ndarray) -> Optional[Tuple[int, int, int]]:
 
     # for thresh_val in [30, 40, 50, 60]:
     thresh_val = 30
-    start = time.perf_counter()
     _, fixed_thresh = cv2.threshold(processed, thresh_val, 255, cv2.THRESH_BINARY_INV)
     thresholds.append(fixed_thresh)
-    end = time.perf_counter()
-    # print(f"{thresh_val}阈值分割执行时间: {(end - start) * 1000:.2f} ms")
 
     best_circle = None
     best_score = 0
@@ -560,30 +606,40 @@ def robust_pupil_detection(img: np.ndarray) -> Tuple[Optional[Tuple[int, int, in
     if detected_circle is None:
         return None, 0.0
 
-    # 提取瞳孔区域并计算清晰度
-    x, y, radius = detected_circle
+    # ===========取瞳孔下方虹膜区域计算清晰度========================
+    roi, roi_info = extract_lower_iris_roi(img, detected_circle)
 
-    # 扩展区域用于清晰度计算
-    expand_factor = 1.8
-    expanded_radius = int(radius * expand_factor)
-
-    # 边界检查
-    h, w = img.shape
-    x1 = max(0, x - expanded_radius)
-    y1 = max(0, y - expanded_radius)
-    x2 = min(w, x + expanded_radius)
-    y2 = min(h, y + expanded_radius)
-
-    crop = img[y1:y2, x1:x2]
-
-    if crop.size == 0:
+    if roi is None or roi.size == 0:
         return None, 0.0
 
-    # 计算清晰度
-    start = time.perf_counter()
-    sharpness = compute_image_sharpness_numba(crop)
-    end = time.perf_counter()
-    # print(f"清晰度执行时间: {(end - start) * 1000:.2f} ms")
+    # 计算清晰度（使用优化后的ROI）
+    sharpness = compute_image_sharpness_numba(roi)
+
+    # ============取瞳孔及周围区域计算清晰度=============
+    # # 提取瞳孔区域并计算清晰度
+    # x, y, radius = detected_circle
+    #
+    # # 扩展区域用于清晰度计算
+    # expand_factor = 1.8
+    # expanded_radius = int(radius * expand_factor)
+    #
+    # # 边界检查
+    # h, w = img.shape
+    # x1 = max(0, x - expanded_radius)
+    # y1 = max(0, y - expanded_radius)
+    # x2 = min(w, x + expanded_radius)
+    # y2 = min(h, y + expanded_radius)
+    #
+    # crop = img[y1:y2, x1:x2]
+    #
+    # if crop.size == 0:
+    #     return None, 0.0
+    #
+    # # 计算清晰度
+    # start = time.perf_counter()
+    # sharpness = compute_image_sharpness_numba(crop)
+    # end = time.perf_counter()
+    # # print(f"清晰度执行时间: {(end - start) * 1000:.2f} ms")
 
     # sharpness = 0
 
@@ -1133,7 +1189,48 @@ class PupilCameraViewer(QWidget):
         self.pupil_align_button.setText("开始瞳孔对齐")
         self.pupil_align_button.setStyleSheet("QPushButton { background-color: #2196F3; color: white; }")
 
+        # ==================基于PID的调整====================
+        # # 清理已完成的线程
+        # self.motor_threads = [t for t in self.motor_threads if t.is_alive()]
+        #
+        # # X轴控制（非阻塞）
+        # if not self.x_aligned and len(self.motor_threads) < 2:  # 限制并发线程数
+        #     control_x = self.pid_x.update(error_x)
+        #     move_x_mm = int(control_x * self.pixel_to_mm_ratio * 20000)
+        #     print(f"x方向控制量:{control_x} 像素")
+        #
+        #     def move_x():
+        #         with self.motor_lock:
+        #             try:
+        #                 self.motor_controller.move_x_to_relative(move_x_mm)
+        #             except Exception as e:
+        #                 print(f"X轴移动错误: {e}")
+        #
+        #     t = threading.Thread(target=move_x, daemon=True)
+        #     t.start()
+        #     self.motor_threads.append(t)
+        #     # self.motor_controller.move_x_to_relative(move_x_mm)
+        #
+        # # Y轴控制（非阻塞）
+        # if not self.y_aligned and len(self.motor_threads) < 2:
+        #     control_y = self.pid_y.update(error_y)
+        #     move_y_mm = int(control_y * self.pixel_to_mm_ratio * 6300)
+        #     print(f"x方向控制量:{control_y} 像素")
+        #
+        #     def move_y():
+        #         with self.motor_lock:
+        #             try:
+        #                 self.motor_controller.move_y_to_relative(-move_y_mm)
+        #             except Exception as e:
+        #                 print(f"Y轴移动错误: {e}")
+        #
+        #     t = threading.Thread(target=move_y, daemon=True)
+        #     t.start()
+        #     self.motor_threads.append(t)
+        #     # self.motor_controller.move_y_to_relative(-move_y_mm)
+
         # 更新状态显示
+
         x_status = "已对准" if self.x_aligned else "调整中"
         y_status = "已对准" if self.y_aligned else "调整中"
 
