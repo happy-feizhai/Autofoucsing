@@ -948,10 +948,10 @@ class PupilCameraViewer(QWidget):
             # 移动电机
             # self.motor_controller.move_y_to_absolute(new_y_pos)
 
-            # t2 = threading.Thread(target=self.motor_controller.move_y_to_relative(-move_y_mm), name='Motorx_Thread')
+            # t2 = threading.Thread(target=self.motor_controller.move_y_to_relative(-move_z_mm), name='Motorx_Thread')
             # t2.start()
             # t2.join()
-            self.motor_controller.move_y_to_relative(-move_y_mm)
+            self.motor_controller.move_z_to_relative(-move_y_mm)
 
 
         # 更新状态显示
@@ -1047,7 +1047,7 @@ class PupilCameraViewer(QWidget):
             if self.pupil_alignment_mode:
                 self.alignment_status_text.setText("未检测到瞳孔，无法进行对齐")
                 self.motor_controller.stop_x()
-                self.motor_controller.stop_y()
+                self.motor_controller.stop_z()
 
     def display_normal_image(self, img):
         # """显示普通图像（不带标记）"""

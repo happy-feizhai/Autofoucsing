@@ -198,13 +198,21 @@ class MotorController:
         self.xaxis.setSpeedPath()
         self.xaxis.setJogSpeed(Device_Stage.X_LowSpeed, Device_Stage.X_HighSpeed)
 
+        self.yaxis = Stage_LinearMovement(DM2C.Driver_02)
+        self.yaxis.setModbus(self.modbus)
+        self.yaxis.reset()
+        self.yaxis.setRelativePositionPath()
+        self.yaxis.setAbsolutePositionPath()
+        self.yaxis.setSpeedPath()
+        self.yaxis.setJogSpeed(Device_Stage.Y_LowSpeed, Device_Stage.Y_HighSpeed)
+
         self.zaxis = Stage_LinearMovement(DM2C.Driver_03)
         self.zaxis.setModbus(self.modbus)
         self.zaxis.reset()
         self.zaxis.setRelativePositionPath()
         self.zaxis.setAbsolutePositionPath()
         self.zaxis.setSpeedPath()
-        self.zaxis.setJogSpeed(Device_Stage.X_LowSpeed, Device_Stage.X_HighSpeed)
+        self.zaxis.setJogSpeed(Device_Stage.Z_LowSpeed, Device_Stage.Z_HighSpeed)
 
     def get_x_position(self):
         """获取X轴电机当前位置（单位：mm）
@@ -213,6 +221,12 @@ class MotorController:
         return self.xaxis.Position()
 
     def get_y_position(self):
+        """获取y轴电机当前位置（单位：mm）
+        实际使用时，请替换为真实的电机位置读取函数
+        """
+        return self.yaxis.Position()
+
+    def get_z_position(self):
         """获取Y轴电机当前位置（单位：mm）
         实际使用时，请替换为真实的电机位置读取函数
         """
@@ -226,10 +240,17 @@ class MotorController:
         self.xaxis.goAbsolutePosition(position)
 
     def move_y_to_absolute(self, position):
-        """移动Y轴电机到绝对位置（单位：mm）
+        """移动y轴电机到绝对位置（单位：mm）
         实际使用时，请替换为真实的电机移动函数
         """
         print(f"Moving Y motor to absolute position: {position:.3f} mm")
+        self.yaxis.goAbsolutePosition(position)
+
+    def move_z_to_absolute(self, position):
+        """移动Z轴电机到绝对位置（单位：mm）
+        实际使用时，请替换为真实的电机移动函数
+        """
+        print(f"Moving Z motor to absolute position: {position:.3f} mm")
         self.zaxis.goAbsolutePosition(position)
 
     def move_x_to_relative(self, position):
@@ -241,7 +262,13 @@ class MotorController:
     def move_y_to_relative(self, position):
         """移动y轴电机到相对位置（单位：mm）
         """
-        print(f"Moving X motor : {position:.3f}mm")
+        print(f"Moving Y motor : {position:.3f}mm")
+        self.yaxis.goRelativePosition(position)
+
+    def move_z_to_relative(self, position):
+        """移动z轴电机到相对位置（单位：mm）
+        """
+        print(f"Moving Z motor : {position:.3f}mm")
         self.zaxis.goRelativePosition(position)
 
     def move_x_go_speed(self, speed):
@@ -251,9 +278,15 @@ class MotorController:
         self.xaxis.goSpeed(speed)
 
     def move_y_go_speed(self, speed):
+        """驱动x电机按指定速度移动
+        """
+        print(f"Moving Y motor at speed: {speed}")
+        self.yaxis.goSpeed(speed)
+
+    def move_z_go_speed(self, speed):
         """驱动y电机按指定速度移动
         """
-        print(f"Moving X motor at speed: {speed}")
+        print(f"Moving Z motor at speed: {speed}")
         self.zaxis.goSpeed(speed)
 
 
@@ -264,13 +297,20 @@ class MotorController:
         self.xaxis.stop()
         print("Stopping X motor")
 
-
     def stop_y(self):
         """
         Y轴电机急停
         """
-        self.zaxis.stop()
+        self.yaxis.stop()
         print("Stopping Y motor")
+
+
+    def stop_z(self):
+        """
+        Z轴电机急停
+        """
+        self.zaxis.stop()
+        print("Stopping Z motor")
 
 
 
@@ -1181,9 +1221,9 @@ class PupilCameraViewer(QWidget):
 
         # 清理已完成的线程
         move_x_mm = int(error_x * self.pixel_to_mm_ratio * 20000)
-        move_y_mm = int(error_y * self.pixel_to_mm_ratio * 6335)
+        move_z_mm = int(error_y * self.pixel_to_mm_ratio * 6335)
         self.motor_controller.move_x_to_relative(move_x_mm)
-        self.motor_controller.move_y_to_relative(-move_y_mm)
+        self.motor_controller.move_z_to_relative(-move_z_mm)
 
         self.pupil_alignment_mode = not self.pupil_alignment_mode
         self.pupil_align_button.setText("开始瞳孔对齐")
@@ -1214,20 +1254,20 @@ class PupilCameraViewer(QWidget):
         # # Y轴控制（非阻塞）
         # if not self.y_aligned and len(self.motor_threads) < 2:
         #     control_y = self.pid_y.update(error_y)
-        #     move_y_mm = int(control_y * self.pixel_to_mm_ratio * 6300)
+        #     move_z_mm = int(control_y * self.pixel_to_mm_ratio * 6300)
         #     print(f"x方向控制量:{control_y} 像素")
         #
         #     def move_y():
         #         with self.motor_lock:
         #             try:
-        #                 self.motor_controller.move_y_to_relative(-move_y_mm)
+        #                 self.motor_controller.move_y_to_relative(-move_z_mm)
         #             except Exception as e:
         #                 print(f"Y轴移动错误: {e}")
         #
         #     t = threading.Thread(target=move_y, daemon=True)
         #     t.start()
         #     self.motor_threads.append(t)
-        #     # self.motor_controller.move_y_to_relative(-move_y_mm)
+        #     # self.motor_controller.move_y_to_relative(-move_z_mm)
 
         # 更新状态显示
 
@@ -1260,17 +1300,17 @@ class PupilCameraViewer(QWidget):
 
         # 计算速度（比例控制）
         speed_x = error_x * speed_factor
-        speed_y = error_y * speed_factor
+        speed_z = error_y * speed_factor
 
         # 限制最大速度
         speed_x = max(-max_speed, min(max_speed, speed_x))
-        speed_y = max(-max_speed, min(max_speed, speed_y))
+        speed_z = max(-max_speed, min(max_speed, speed_z))
 
         # 应用死区
         if abs(error_x) < dead_zone:
             speed_x = 0
         if abs(error_y) < dead_zone:
-            speed_y = 0
+            speed_z = 0
 
         # 发送移动指令
         try:
@@ -1278,9 +1318,9 @@ class PupilCameraViewer(QWidget):
                 self.motor_controller.move_x_go_speed(int(-speed_x))
                 print(f"X轴移动速度: {int(-speed_x)}")
 
-            if speed_y != 0:
-                self.motor_controller.move_y_go_speed(int(speed_y))  # Y轴可能需要反向
-                print(f"Y轴移动速度: {int(speed_y)}")
+            if speed_z != 0:
+                self.motor_controller.move_z_go_speed(int(speed_z))  # Y轴可能需要反向
+                print(f"Y轴移动速度: {int(speed_z)}")
 
             print(f"鼠标控制开始 - 目标位置: ({target_x:.1f}, {target_y:.1f})")
 
@@ -1292,7 +1332,7 @@ class PupilCameraViewer(QWidget):
         if self.motor_controller:
             try:
                 self.motor_controller.stop_x()
-                self.motor_controller.stop_y()
+                self.motor_controller.stop_z()
                 print("鼠标控制停止")
             except Exception as e:
                 print(f"停止电机错误: {e}")
