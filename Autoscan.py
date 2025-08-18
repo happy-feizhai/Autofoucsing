@@ -299,7 +299,7 @@ class SimpleCameraMotorController(QWidget):
             com_port = self.com_port_edit.text()
             self.modbus = ModbusRTU(serial.Serial(port=com_port, baudrate=115200, timeout=2, write_timeout=2))
 
-            self.motor = Stage_LinearMovement(DM2C.Driver_01)
+            self.motor = Stage_LinearMovement(DM2C.Driver_02)
             self.motor.setModbus(self.modbus)
             self.motor.reset()
             self.motor.setRelativePositionPath(speed=800, acceleration=80, deceleration=80)
@@ -420,8 +420,8 @@ class SimpleCameraMotorController(QWidget):
         """关闭窗口"""
         self.stop_scan()
         self.close_camera()
-        if self.modbus:
-            self.modbus.close()
+        # if self.modbus:
+        #     self.modbus.close()
         event.accept()
 
 

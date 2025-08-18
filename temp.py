@@ -846,6 +846,17 @@ class PupilCameraViewer(QWidget):
         self.update_pid_button.clicked.connect(self.update_pid_parameters)
         right_column.addWidget(self.update_pid_button)
 
+        # y轴移动
+        self.ymotor_step_label = QLabel("Step:")
+        self.ymotor_step_edit = QLineEdit("10000")
+        self.ymotor_step_edit.setValidator(QIntValidator(-3000000, 3000000))
+        right_column.addWidget(self.ymotor_step_label)
+        right_column.addWidget(self.ymotor_step_edit)
+        self.ymotor_move_button = QPushButton("Move")
+        self.ymotor_move_button.clicked.connect(self.ymotor_move)
+        right_column.addWidget(self.ymotor_move_button)
+
+
         right_column.addWidget(QLabel(""))  # 空行
 
         # 检测结果显示
@@ -933,6 +944,12 @@ class PupilCameraViewer(QWidget):
             self.sharpness_text.setText("PID参数已更新")
         except ValueError:
             QMessageBox.warning(self, "警告", "请输入有效的PID参数")
+
+    def ymotor_move(self):
+        if self.motor_controller:
+            step = int(self.ymotor_step_edit.text())
+            self.motor_controller.move_to_relative("y", step)
+
     def set_camera_parameters(self):
         """设置相机参数"""
         if self.camera is None:
@@ -1171,7 +1188,7 @@ class PupilCameraViewer(QWidget):
         # 清理已完成的线程
         move_x_mm = int(error_x * self.pixel_to_mm_ratio * 20000)
         move_z_mm = int(error_z * self.pixel_to_mm_ratio * 6335)
-        self.motor_controller.move_to_relative("x", move_x_mm)
+        self.motor_controller.move_to_relative("x", -move_x_mm)
         self.motor_controller.move_to_relative("z", -move_z_mm)
 
         self.pupil_alignment_mode = not self.pupil_alignment_mode
@@ -1410,7 +1427,8 @@ class PupilCameraViewer(QWidget):
 
     def closeEvent(self, event):
         """窗口关闭事件"""
-        self.stop_mouse_control()
+        if self.motor_controller:
+            self.motor_controller.stop_all()
         self.close_camera()
         event.accept()
 
