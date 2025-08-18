@@ -96,6 +96,29 @@ class AutoFocusStateMachine(QObject):
         self.focus_history = []
         self.current_image = None
 
+        # 步进电机换算：对外算法使用 mm，电机底层使用步数
+        self.steps_per_mm = 20000  # 1 mm = 20000 steps
+
+    # --- 单位换算与封装移动接口新增开始 ---
+    def _mm_to_steps(self, mm: float) -> int:
+        return int(round(mm * self.steps_per_mm))
+
+    def _steps_to_mm(self, steps: float) -> float:
+        return steps / self.steps_per_mm
+
+    def _get_y_mm(self) -> float:
+        steps = self.motor.get_position("y")  # 底层返回步数
+        return self._steps_to_mm(steps)
+
+    def _move_y_absolute_mm(self, y_mm: float):
+        steps = self._mm_to_steps(y_mm)
+        self.motor.move_to_absolute("y", steps)
+
+    def _move_y_relative_mm(self, delta_mm: float):
+        steps = self._mm_to_steps(delta_mm)
+        self.motor.move_to_relative("y", steps)
+    # --- 单位换算与封装移动接口新增结束 ---
+
     def set_config(self, **kwargs):
         """更新配置参数"""
         self.config.update(kwargs)
@@ -144,8 +167,8 @@ class AutoFocusStateMachine(QObject):
         start_time = time.time()
 
         try:
-            # 获取当前Y轴位置
-            current_y = self.motor.get_position("y")
+            # 获取当前Y轴位置(步->mm)
+            current_y = self._get_y_mm()
             self.message_updated.emit(f"开始自动对焦，当前位置: {current_y:.2f}mm")
 
             # 阶段1：搜索瞳孔
@@ -239,7 +262,8 @@ class AutoFocusStateMachine(QObject):
 
             self._update_progress(10 + int(20 * i / len(positions)))
 
-            self.motor.move_to_relative("y", y_pos - self.motor.get_position("y"))
+            # 直接绝对移动到目标 mm 位置
+            self._move_y_absolute_mm(y_pos)
             time.sleep(self.config['settle_time'])
 
             if self._check_pupil_detection():
@@ -249,18 +273,18 @@ class AutoFocusStateMachine(QObject):
                 if len(pupil_positions) == 1:
                     # 找到第一个瞳孔位置，向两边扩展搜索
                     for dy in np.arange(fine_step, 3.0, fine_step):
-                        # 向正方向搜索
+                        # 向正方向
                         y_test = y_pos + dy
-                        self.motor.move_to_absolute("y", y_test)
+                        self._move_y_absolute_mm(y_test)
                         time.sleep(self.config['settle_time'])
                         if self._check_pupil_detection():
                             pupil_positions.append(y_test)
                         else:
                             break
 
-                        # 向负方向搜索
+                        # 向负方向
                         y_test = y_pos - dy
-                        self.motor.move_to_absolute("y", y_test)
+                        self._move_y_absolute_mm(y_test)
                         time.sleep(self.config['settle_time'])
                         if self._check_pupil_detection():
                             pupil_positions.append(y_test)
@@ -286,10 +310,9 @@ class AutoFocusStateMachine(QObject):
         for i, y_pos in enumerate(positions):
             if self.cancel_requested:
                 return None
-
             self._update_progress(30 + int(30 * i / len(positions)))
 
-            self.motor.move_to_absolute("y", y_pos)
+            self._move_y_absolute_mm(y_pos)
             time.sleep(self.config['settle_time'])
 
             # 计算清晰度（多帧平均）
@@ -348,7 +371,7 @@ class AutoFocusStateMachine(QObject):
             sharpness_values = []
 
             for y_pos in positions:
-                self.motor.move_to_absolute("y", y_pos)
+                self._move_y_absolute_mm(y_pos)
                 time.sleep(self.config['settle_time'])
 
                 sharpness = self._measure_sharpness_averaged(require_pupil=True)
@@ -386,7 +409,7 @@ class AutoFocusStateMachine(QObject):
                 break
 
         # 移动到最佳位置
-        self.motor.move_to_absolute("y", best_y)
+        self._move_y_absolute_mm(best_y)
         return best_y, best_sharpness
 
     def _measure_sharpness_averaged(self, require_pupil: bool = False) -> Optional[float]:
