@@ -7,9 +7,10 @@ import queue
 from dataclasses import dataclass
 import time, threading
 import concurrent.futures
-from typing import List, Tuple, Optional
+from typing import Tuple, Optional
 from Motor_Driver import Stage_LinearMovement
-from dm2c import DM2C, DM2C_Driver, ModbusRTU
+from dm2c import DM2C, ModbusRTU
+from auto_focus import AutoFocusStateMachine, FocusState, FocusResult
 import serial
 # PySide6 相关导入
 from PySide6 import QtCore
@@ -283,9 +284,10 @@ def compute_image_sharpness_numba(img: np.ndarray) -> float:
 
             # 计算清晰度 F
             F += g1st * g2nd
-    F = F * 1e-6
 
-    return F
+    count = ((w - 3) // 2) * ((h - 3) // 2)
+
+    return F * 0.1 / count
 
 
 def preprocess_image(img: np.ndarray) -> np.ndarray:
@@ -557,7 +559,6 @@ def detect_pupil_contour(img: np.ndarray) -> Optional[Tuple[int, int, int]]:
             end = time.perf_counter()
             # print(f"{thresh_val}拟合圆执行时间: {(end - start) * 1000:.2f} ms")
 
-
             if radius < r_threshold or radius > 2.5 * r_threshold:  # 半径范围检查
                 continue
 
@@ -603,34 +604,6 @@ def robust_pupil_detection(img: np.ndarray) -> Tuple[Optional[Tuple[int, int, in
     # 计算清晰度（使用优化后的ROI）
     sharpness = compute_image_sharpness_numba(roi)
 
-    # ============取瞳孔及周围区域计算清晰度=============
-    # # 提取瞳孔区域并计算清晰度
-    # x, y, radius = detected_circle
-    #
-    # # 扩展区域用于清晰度计算
-    # expand_factor = 1.8
-    # expanded_radius = int(radius * expand_factor)
-    #
-    # # 边界检查
-    # h, w = img.shape
-    # x1 = max(0, x - expanded_radius)
-    # y1 = max(0, y - expanded_radius)
-    # x2 = min(w, x + expanded_radius)
-    # y2 = min(h, y + expanded_radius)
-    #
-    # crop = img[y1:y2, x1:x2]
-    #
-    # if crop.size == 0:
-    #     return None, 0.0
-    #
-    # # 计算清晰度
-    # start = time.perf_counter()
-    # sharpness = compute_image_sharpness_numba(crop)
-    # end = time.perf_counter()
-    # # print(f"清晰度执行时间: {(end - start) * 1000:.2f} ms")
-
-    # sharpness = 0
-
     return detected_circle, sharpness
 
 @dataclass
@@ -647,6 +620,9 @@ class PupilCameraViewer(QWidget):
         super().__init__()
         self.setWindowTitle("瞳孔识别相机系统 - Pupil Detection Camera System")
         self.setGeometry(100, 100, 1200, 800)
+
+        self.timer = QTimer(self)
+        self.timer.timeout.connect(self.update_frame)
 
         # 相机相关变量
         self.camera = None
@@ -693,6 +669,11 @@ class PupilCameraViewer(QWidget):
         self.image_queue = queue.Queue(maxsize=2)
         self.latest_image = None
         self.image_lock = threading.Lock()
+
+        # ============ 自动对焦相关 ============
+        self.auto_focus_mode = False  # 自动对焦模式标志
+        self.auto_focus_machine = None  # 自动对焦状态机
+        self.last_focus_result = None  # 最后对焦结果
 
         # 创建UI
         self.setup_ui()
@@ -784,6 +765,64 @@ class PupilCameraViewer(QWidget):
         self.pupil_align_button.setStyleSheet("QPushButton { background-color: #2196F3; color: white; }")
         self.pupil_align_button.setEnabled(False)  # 初始状态禁用
         left_column.addWidget(self.pupil_align_button)
+
+        # 自动对焦控制区
+        left_column.addWidget(QLabel("=== Auto Focus Control ==="))
+
+        # Auto focus button
+        self.auto_focus_button = QPushButton("Start Auto Focus")
+        self.auto_focus_button.setStyleSheet("QPushButton { background-color: #4CAF50; color: white; }")
+        self.auto_focus_button.clicked.connect(self.toggle_auto_focus)
+        left_column.addWidget(self.auto_focus_button)
+
+        # Focus status label
+        self.focus_state_label = QLabel("Focus Status: Idle")
+        self.focus_state_label.setStyleSheet("QLabel { background-color: #f0f0f0; padding: 5px; }")
+        left_column.addWidget(self.focus_state_label)
+
+        # Focus progress bar
+        self.focus_progress_bar = QProgressBar()
+        self.focus_progress_bar.setRange(0, 100)
+        self.focus_progress_bar.setValue(0)
+        left_column.addWidget(self.focus_progress_bar)
+
+        # Sharpness label
+        self.sharpness_label = QLabel("Sharpness: --")
+        left_column.addWidget(self.sharpness_label)
+
+        # Focus info text
+        self.focus_info_text = QTextEdit()
+        self.focus_info_text.setMaximumHeight(100)
+        self.focus_info_text.setReadOnly(True)
+        left_column.addWidget(self.focus_info_text)
+
+        # Focus parameter group (optional)
+        focus_params_group = QGroupBox("Focus Parameters")
+        focus_params_layout = QVBoxLayout()
+
+        # Search range
+        search_range_layout = QHBoxLayout()
+        search_range_layout.addWidget(QLabel("Search Range (mm):"))
+        self.search_range_spin = QDoubleSpinBox()
+        self.search_range_spin.setRange(5.0, 30.0)
+        self.search_range_spin.setValue(20.0)
+        self.search_range_spin.setSingleStep(1.0)
+        search_range_layout.addWidget(self.search_range_spin)
+        focus_params_layout.addLayout(search_range_layout)
+
+        # Precision setting
+        precision_layout = QHBoxLayout()
+        precision_layout.addWidget(QLabel("Focus Precision (mm):"))
+        self.precision_spin = QDoubleSpinBox()
+        self.precision_spin.setRange(0.01, 0.1)
+        self.precision_spin.setValue(0.02)
+        self.precision_spin.setSingleStep(0.01)
+        self.precision_spin.setDecimals(3)
+        precision_layout.addWidget(self.precision_spin)
+        focus_params_layout.addLayout(precision_layout)
+
+        focus_params_group.setLayout(focus_params_layout)
+        left_column.addWidget(focus_params_group)
 
         left_column.addStretch()  # 添加弹性空间
 
@@ -989,7 +1028,6 @@ class PupilCameraViewer(QWidget):
             self.camera.StartGrabbing(pylon.GrabStrategy_LatestImageOnly)
 
             # 启动定时器更新画面
-            self.timer.timeout.connect(self.update_frame)
             self.timer.start(20)  # 20ms更新一次（50 FPS）
 
             self.sharpness_text.setText("相机已打开")
@@ -1036,6 +1074,7 @@ class PupilCameraViewer(QWidget):
             try:
                 self.motor_controller = MotorController()
                 self.connect_motor_button.setEnabled(False)
+                self.initialize_auto_focus()
             except Exception as e:
                 print(e)
                 self.connect_motor_button.setEnabled(True)
@@ -1366,8 +1405,9 @@ class PupilCameraViewer(QWidget):
 
             # 如果开启了对齐模式，执行非阻塞对齐
             if self.pupil_alignment_mode:
-                t = threading.Thread(self.perform_alignment_nonblocking(x, y), daemon=True)
+                t = threading.Thread(target=self.perform_alignment_nonblocking, args=(x, y), daemon=True)
                 t.start()
+
                 # self.perform_alignment_nonblocking(x, y)
         else:
             self.current_pupil_position = None
@@ -1425,8 +1465,176 @@ class PupilCameraViewer(QWidget):
                         f"队列大小: {self.detection_queue.qsize()}"
                     )
 
+    def initialize_auto_focus(self):
+        """初始化自动对焦状态机"""
+        if self.motor_controller is None:
+            self.motor_controller = MotorController()
+
+        # 创建自动对焦状态机
+        self.auto_focus_machine = AutoFocusStateMachine(
+            motor_controller=self.motor_controller,
+            detect_func=robust_pupil_detection,
+            sharpness_func=self.compute_global_sharpness
+        )
+
+        # 设置图像获取函数
+        self.auto_focus_machine.set_image_source(self.get_current_image)
+
+        # 连接信号
+        self.auto_focus_machine.state_changed.connect(self.on_focus_state_changed)
+        self.auto_focus_machine.progress_updated.connect(self.on_focus_progress_updated)
+        self.auto_focus_machine.message_updated.connect(self.on_focus_message_updated)
+        self.auto_focus_machine.focus_completed.connect(self.on_focus_completed)
+
+        # 更新配置
+        self.update_focus_config()
+
+    def update_focus_config(self):
+        """更新对焦配置参数"""
+        if self.auto_focus_machine:
+            self.auto_focus_machine.set_config(
+                pupil_search_range=self.search_range_spin.value(),
+                fine_min_step=self.precision_spin.value()
+            )
+
+    def get_current_image(self):
+        """获取当前相机图像（供自动对焦使用）"""
+        with self.image_lock:
+            if self.latest_image is not None:
+                return self.latest_image.copy()
+
+        # 如果没有缓存图像，直接从相机获取
+        try:
+            grab_result = self.camera.RetrieveResult(1000, pylon.TimeoutHandling_ThrowException)
+            if grab_result and grab_result.GrabSucceeded():
+                img = grab_result.Array
+                grab_result.Release()
+                return img
+        except:
+            pass
+        return None
+
+    def compute_global_sharpness(self, img):
+        """计算全局清晰度（不依赖瞳孔检测）"""
+        if img is None:
+            return 0
+
+        if len(img.shape) == 3:
+            img = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+
+        # 使用图像中心60%区域
+        h, w = img.shape
+        center_x, center_y = w // 2, h // 2
+        roi_size = int(min(w, h) * 0.6)
+
+        x1 = max(0, center_x - roi_size // 2)
+        y1 = max(0, center_y - roi_size // 2)
+        x2 = min(w, center_x + roi_size // 2)
+        y2 = min(h, center_y + roi_size // 2)
+
+        roi = img[y1:y2, x1:x2]
+
+        if roi.size == 0:
+            return 0
+
+        return compute_image_sharpness_numba(roi)
+
+    def toggle_auto_focus(self):
+        """切换自动对焦模式"""
+        if not self.camera:
+            QMessageBox.warning(self, "警告", "请先连接相机")
+            return
+
+        if self.auto_focus_machine is None:
+            self.initialize_auto_focus()
+
+        self.auto_focus_mode = not self.auto_focus_mode
+
+        if self.auto_focus_mode:
+            # 如果正在进行瞳孔对齐，先停止
+            if self.pupil_alignment_mode:
+                self.toggle_pupil_alignment()
+
+            # 更新配置
+            self.update_focus_config()
+
+            # 启动自动对焦
+            self.auto_focus_button.setText("停止自动对焦")
+            self.auto_focus_button.setStyleSheet("QPushButton { background-color: #f44336; color: white; }")
+            self.focus_info_text.clear()
+            self.focus_info_text.append("启动自动对焦...")
+
+            # 开始对焦
+            self.auto_focus_machine.start_auto_focus()
+        else:
+            # 停止自动对焦
+            self.auto_focus_button.setText("开始自动对焦")
+            self.auto_focus_button.setStyleSheet("QPushButton { background-color: #4CAF50; color: white; }")
+
+            if self.auto_focus_machine.is_running:
+                self.auto_focus_machine.cancel_focus()
+
+    def on_focus_state_changed(self, state_str):
+        """对焦状态变化处理"""
+        self.focus_state_label.setText(f"对焦状态: {state_str}")
+
+        # 根据状态改变标签颜色
+        color_map = {
+            "空闲": "#f0f0f0",
+            "搜索瞳孔": "#ffeb3b",
+            "粗对焦": "#ff9800",
+            "精对焦": "#03a9f4",
+            "对焦完成": "#4caf50",
+            "对焦失败": "#f44336",
+            "对焦取消": "#9e9e9e"
+        }
+
+        color = color_map.get(state_str, "#f0f0f0")
+        self.focus_state_label.setStyleSheet(f"QLabel {{ background-color: {color}; padding: 5px; }}")
+
+    def on_focus_progress_updated(self, progress):
+        """对焦进度更新处理"""
+        self.focus_progress_bar.setValue(progress)
+
+    def on_focus_message_updated(self, message):
+        """对焦消息更新处理"""
+        self.focus_info_text.append(f"[{time.strftime('%H:%M:%S')}] {message}")
+        # 自动滚动到底部
+        scrollbar = self.focus_info_text.verticalScrollBar()
+        scrollbar.setValue(scrollbar.maximum())
+
+    def on_focus_completed(self, result: FocusResult):
+        """对焦完成处理"""
+        self.last_focus_result = result
+        self.auto_focus_mode = False
+
+        self.auto_focus_button.setText("开始自动对焦")
+        self.auto_focus_button.setStyleSheet("QPushButton { background-color: #4CAF50; color: white; }")
+
+        if result.success:
+            self.focus_info_text.append(f"\n{'=' * 40}")
+            self.focus_info_text.append(f"对焦成功！")
+            self.focus_info_text.append(f"最终位置: {result.final_position:.3f} mm")
+            self.focus_info_text.append(f"清晰度值: {result.final_sharpness:.2f}")
+            self.focus_info_text.append(f"耗时: {result.total_time:.2f} 秒")
+            self.focus_info_text.append(f"{'=' * 40}\n")
+
+            # 更新清晰度显示
+            self.sharpness_label.setText(f"清晰度: {result.final_sharpness:.2f}")
+
+            QMessageBox.information(self, "对焦完成", result.message)
+        else:
+            self.focus_info_text.append(f"\n对焦失败: {result.message}\n")
+            QMessageBox.warning(self, "对焦失败", result.message)
+
     def closeEvent(self, event):
         """窗口关闭事件"""
+
+        # 停止自动对焦
+        if self.auto_focus_machine and self.auto_focus_machine.is_running:
+            self.auto_focus_machine.cancel_focus()
+            time.sleep(0.5)  # 等待对焦线程结束
+
         if self.motor_controller:
             self.motor_controller.stop_all()
         self.close_camera()
