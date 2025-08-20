@@ -621,12 +621,10 @@ class PupilCameraViewer(QWidget):
         self.setWindowTitle("瞳孔识别相机系统 - Pupil Detection Camera System")
         self.setGeometry(100, 100, 1200, 800)
 
-        self.timer = QTimer(self)
-        self.timer.timeout.connect(self.update_frame)
-
         # 相机相关变量
         self.camera = None
         self.timer = QTimer(self)
+        self.timer.timeout.connect(self.update_frame)
         self.pupil_detection_mode = False  # 瞳孔检测模式标志
         self.pupil_alignment_mode = False  # 瞳孔对齐模式标志
 
@@ -814,7 +812,7 @@ class PupilCameraViewer(QWidget):
         precision_layout = QHBoxLayout()
         precision_layout.addWidget(QLabel("Focus Precision (mm):"))
         self.precision_spin = QDoubleSpinBox()
-        self.precision_spin.setRange(0.01, 0.1)
+        self.precision_spin.setRange(0.01, 1)
         self.precision_spin.setValue(0.02)
         self.precision_spin.setSingleStep(0.01)
         self.precision_spin.setDecimals(3)
