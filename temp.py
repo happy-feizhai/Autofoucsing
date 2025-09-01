@@ -803,7 +803,7 @@ class PupilCameraViewer(QWidget):
         search_range_layout.addWidget(QLabel("Search Range (mm):"))
         self.search_range_spin = QDoubleSpinBox()
         self.search_range_spin.setRange(5.0, 30.0)
-        self.search_range_spin.setValue(20.0)
+        self.search_range_spin.setValue(40.0)
         self.search_range_spin.setSingleStep(1.0)
         search_range_layout.addWidget(self.search_range_spin)
         focus_params_layout.addLayout(search_range_layout)
@@ -813,8 +813,8 @@ class PupilCameraViewer(QWidget):
         precision_layout.addWidget(QLabel("Focus Precision (mm):"))
         self.precision_spin = QDoubleSpinBox()
         self.precision_spin.setRange(0.01, 1)
-        self.precision_spin.setValue(0.02)
-        self.precision_spin.setSingleStep(0.01)
+        self.precision_spin.setValue(0.1)
+        self.precision_spin.setSingleStep(0.02)
         self.precision_spin.setDecimals(3)
         precision_layout.addWidget(self.precision_spin)
         focus_params_layout.addLayout(precision_layout)
@@ -1520,10 +1520,10 @@ class PupilCameraViewer(QWidget):
         if len(img.shape) == 3:
             img = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
 
-        # 使用图像中心60%区域
+        # 使用图像中心40%区域
         h, w = img.shape
         center_x, center_y = w // 2, h // 2
-        roi_size = int(min(w, h) * 0.6)
+        roi_size = int(min(w, h) * 0.4)
 
         x1 = max(0, center_x - roi_size // 2)
         y1 = max(0, center_y - roi_size // 2)

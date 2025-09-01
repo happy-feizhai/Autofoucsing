@@ -68,28 +68,28 @@ class AutoFocusStateMachine(QObject):
         # 对焦参数（可调整）
         self.config = {
             # 瞳孔搜索参数
-            'pupil_search_range': 20.0,  # mm
+            'pupil_search_range': 40.0,  # mm
             'pupil_search_coarse_step': 2.0,  # mm
-            'pupil_search_fine_step': 0.5,  # mm
+            'pupil_search_fine_step': 1,  # mm
 
             # 粗对焦参数
-            'coarse_range': 10.0,  # mm
+            'coarse_range': 20.0,  # mm
             'coarse_samples': 15,  # 采样点数
 
             # 精对焦参数
             'fine_range': 1.0,  # mm
-            'fine_initial_step': 0.1,  # mm
-            'fine_min_step': 0.02,  # mm
-            'fine_max_iterations': 20,
+            'fine_initial_step': 1.5,  # mm
+            'fine_min_step': 0.1,  # mm
+            'fine_max_iterations': 30,
 
             # 稳定性参数
-            'settle_time': 0.05,  # 电机稳定时间(秒)
-            'average_frames': 3,  # 清晰度计算平均帧数
+            'settle_time': 0.03,  # 电机稳定时间(秒)
+            'average_frames': 1,  # 清晰度计算平均帧数
             'pupil_detect_threshold': 0.6,  # 瞳孔检测成功率阈值
 
             # 清晰度参数
             'sharpness_noise_level': 0.05,  # 清晰度噪声水平
-            'improvement_threshold': 0.02,  # 改善阈值
+            'improvement_threshold': 0.05,  # 改善阈值
         }
 
         # 对焦历史记录
@@ -117,7 +117,6 @@ class AutoFocusStateMachine(QObject):
     def _move_y_relative_mm(self, delta_mm: float):
         steps = self._mm_to_steps(delta_mm)
         self.motor.move_to_relative("y", steps)
-    # --- 单位换算与封装移动接口新增结束 ---
 
     def set_config(self, **kwargs):
         """更新配置参数"""
@@ -272,7 +271,7 @@ class AutoFocusStateMachine(QObject):
                 # 找到瞳孔后，在附近细化搜索边界
                 if len(pupil_positions) == 1:
                     # 找到第一个瞳孔位置，向两边扩展搜索
-                    for dy in np.arange(fine_step, 3.0, fine_step):
+                    for dy in np.arange(fine_step, 20.0, fine_step):
                         # 向正方向
                         y_test = y_pos + dy
                         self._move_y_absolute_mm(y_test)
@@ -337,12 +336,12 @@ class AutoFocusStateMachine(QObject):
             return None
 
         # 可选：使用二次拟合预测更精确的峰值位置
-        if len(results) >= 3:
-            predicted = self._predict_peak_position(results)
-            if predicted and y_min <= predicted <= y_max:
-                return predicted
-
-        return best['position']
+        # if len(results) >= 3:
+        #     predicted = self._predict_peak_position(results)
+        #     if predicted and y_min <= predicted <= y_max:
+        #         return predicted
+        #
+        # return best['position']
 
     def _fine_focus(self, start_y: float) -> Tuple[Optional[float], Optional[float]]:
         """
