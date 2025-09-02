@@ -3,6 +3,7 @@
 用于瞳孔相机的Z轴自动对焦功能
 """
 
+import math
 import time
 import numpy as np
 from enum import Enum
@@ -68,28 +69,28 @@ class AutoFocusStateMachine(QObject):
         # 对焦参数（可调整）
         self.config = {
             # 瞳孔搜索参数
-            'pupil_search_range': 40.0,  # mm
-            'pupil_search_coarse_step': 2.0,  # mm
+            'pupil_search_range': 80.0,  # mm
+            'pupil_search_coarse_step': 3.0,  # mm
             'pupil_search_fine_step': 1,  # mm
 
             # 粗对焦参数
             'coarse_range': 20.0,  # mm
-            'coarse_samples': 15,  # 采样点数
+            'coarse_samples': 12,  # 采样点数
 
             # 精对焦参数
             'fine_range': 1.0,  # mm
-            'fine_initial_step': 1.5,  # mm
+            'fine_initial_step': 1.2,  # mm
             'fine_min_step': 0.1,  # mm
             'fine_max_iterations': 30,
 
             # 稳定性参数
-            'settle_time': 0.03,  # 电机稳定时间(秒)
+            'settle_time': 0.1,  # 电机稳定时间(秒)
             'average_frames': 1,  # 清晰度计算平均帧数
             'pupil_detect_threshold': 0.6,  # 瞳孔检测成功率阈值
 
             # 清晰度参数
             'sharpness_noise_level': 0.05,  # 清晰度噪声水平
-            'improvement_threshold': 0.05,  # 改善阈值
+            'improvement_threshold': 0,  # 改善阈值
         }
 
         # 对焦历史记录
@@ -264,32 +265,39 @@ class AutoFocusStateMachine(QObject):
             # 直接绝对移动到目标 mm 位置
             self._move_y_absolute_mm(y_pos)
             time.sleep(self.config['settle_time'])
+            if i == 1:
+                time.sleep(0.5)
 
             if self._check_pupil_detection():
                 pupil_positions.append(y_pos)
 
+                if i == 0:
+                    # 中心点就检测到瞳孔，直接返回一个小范围
+                    return y_pos - 10, y_pos + 10
+
                 # 找到瞳孔后，在附近细化搜索边界
                 if len(pupil_positions) == 1:
-                    # 找到第一个瞳孔位置，向两边扩展搜索
-                    for dy in np.arange(fine_step, 20.0, fine_step):
-                        # 向正方向
-                        y_test = y_pos + dy
-                        self._move_y_absolute_mm(y_test)
-                        time.sleep(self.config['settle_time'])
-                        if self._check_pupil_detection():
-                            pupil_positions.append(y_test)
-                        else:
-                            break
-
-                        # 向负方向
-                        y_test = y_pos - dy
-                        self._move_y_absolute_mm(y_test)
-                        time.sleep(self.config['settle_time'])
-                        if self._check_pupil_detection():
-                            pupil_positions.append(y_test)
-                        else:
-                            break
-                    break
+                    return y_pos - 10, y_pos + 10
+                    # # 找到第一个瞳孔位置，向两边扩展搜索
+                    # for dy in np.arange(fine_step, 20.0, fine_step):
+                    #     # 向正方向
+                    #     y_test = y_pos + dy
+                    #     self._move_y_absolute_mm(y_test)
+                    #     time.sleep(self.config['settle_time'])
+                    #     if self._check_pupil_detection():
+                    #         pupil_positions.append(y_test)
+                    #     else:
+                    #         break
+                    #
+                    #     # 向负方向
+                    #     y_test = y_pos - dy
+                    #     self._move_y_absolute_mm(y_test)
+                    #     time.sleep(self.config['settle_time'])
+                    #     if self._check_pupil_detection():
+                    #         pupil_positions.append(y_test)
+                    #     else:
+                    #         break
+                    # break
 
         if pupil_positions:
             return min(pupil_positions) - 0.5, max(pupil_positions) + 0.5
@@ -300,6 +308,7 @@ class AutoFocusStateMachine(QObject):
         """
         粗对焦搜索
         """
+        # TODO: 改进粗对焦清晰度搜索方法，如果清晰度下降就立即停止，并以下降前的最高位置作为精对焦的初始位置
         self.message_updated.emit(f"粗对焦搜索: {y_min:.2f}mm 到 {y_max:.2f}mm")
 
         n_samples = self.config['coarse_samples']
@@ -313,13 +322,15 @@ class AutoFocusStateMachine(QObject):
 
             self._move_y_absolute_mm(y_pos)
             time.sleep(self.config['settle_time'])
+            if i == 0:
+                time.sleep(0.5)
 
             # 计算清晰度（多帧平均）
             sharpness = self._measure_sharpness_averaged()
 
             results.append({
                 'position': y_pos,
-                'sharpness': sharpness,
+                'sharpness': sharpness if sharpness is not None else 0,
                 'has_pupil': self._check_pupil_detection()
             })
 
@@ -341,7 +352,7 @@ class AutoFocusStateMachine(QObject):
         #     if predicted and y_min <= predicted <= y_max:
         #         return predicted
         #
-        # return best['position']
+        return best['position']
 
     def _fine_focus(self, start_y: float) -> Tuple[Optional[float], Optional[float]]:
         """
@@ -358,6 +369,8 @@ class AutoFocusStateMachine(QObject):
         best_sharpness = 0
         no_improvement_count = 0
 
+        k = 0
+
         for iteration in range(max_iterations):
             if self.cancel_requested:
                 return None, None
@@ -372,9 +385,12 @@ class AutoFocusStateMachine(QObject):
             for y_pos in positions:
                 self._move_y_absolute_mm(y_pos)
                 time.sleep(self.config['settle_time'])
+                if k == 0:
+                    time.sleep(1)
+                    k = 1
 
                 sharpness = self._measure_sharpness_averaged(require_pupil=True)
-                sharpness_values.append(sharpness if sharpness else 0)
+                sharpness_values.append(sharpness if sharpness is not None else 0)
 
             # 找最佳位置
             max_idx = np.argmax(sharpness_values)
@@ -452,13 +468,17 @@ class AutoFocusStateMachine(QObject):
 
     def _generate_spiral_positions(self, center: float, max_range: float, step: float) -> List[float]:
         """
-        生成螺旋搜索位置
+        生成位置列表：第一个为 center，其余位置按从小到大排列（不再左右交替）。
         """
-        positions = [center]
-        for i in range(1, int(max_range / step) + 1):
-            positions.append(center + i * step)
-            positions.append(center - i * step)
-        return positions
+        if step <= 0 or max_range <= 0:
+            return [center]
+
+        n = int(math.floor(max_range / step))
+        # 升序生成：center - n*step ... center ... center + n*step
+        seq = [center + k * step for k in range(-n, n + 1)]
+        # 移除 center（考虑浮点误差），其余保持升序
+        rest = [p for p in seq if not math.isclose(p, center, rel_tol=1e-12, abs_tol=1e-12)]
+        return [center] + rest
 
     def _predict_peak_position(self, results: List[Dict]) -> Optional[float]:
         """

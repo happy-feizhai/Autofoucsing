@@ -232,17 +232,17 @@ class MotorController:
 
     # 3. 合并重复的方法
     def get_position(self, axis_name: str) -> float:
-        """获取指定轴电机的当前位置（单位：mm）。"""
+        """获取指定轴电机的当前位置（单位：steps）。"""
         return self._get_axis(axis_name).Position()
 
     def move_to_absolute(self, axis_name: str, position: float):
-        """移动指定轴电机到绝对位置（单位：mm）。"""
-        print(f"Moving {axis_name.upper()} motor to absolute position: {position:.3f} mm")
+        """移动指定轴电机到绝对位置（单位：steps）。"""
+        print(f"Moving {axis_name.upper()} motor to absolute position: {position:.3f} steps")
         self._get_axis(axis_name).goAbsolutePosition(position)
 
     def move_to_relative(self, axis_name: str, distance: float):
-        """相对移动指定轴电机一定距离（单位：mm）。"""
-        print(f"Moving {axis_name.upper()} motor by relative distance: {distance:.3f} mm")
+        """相对移动指定轴电机一定距离（单位：steps）。"""
+        print(f"Moving {axis_name.upper()} motor by relative distance: {distance:.3f} steps")
         self._get_axis(axis_name).goRelativePosition(distance)
 
     def go_speed(self, axis_name: str, speed: float):
@@ -559,7 +559,7 @@ def detect_pupil_contour(img: np.ndarray) -> Optional[Tuple[int, int, int]]:
             end = time.perf_counter()
             # print(f"{thresh_val}拟合圆执行时间: {(end - start) * 1000:.2f} ms")
 
-            if radius < r_threshold or radius > 2.5 * r_threshold:  # 半径范围检查
+            if radius < r_threshold or radius > 1.8 * r_threshold:  # 半径范围检查
                 continue
 
             # 计算轮廓质量得分
@@ -802,7 +802,7 @@ class PupilCameraViewer(QWidget):
         search_range_layout = QHBoxLayout()
         search_range_layout.addWidget(QLabel("Search Range (mm):"))
         self.search_range_spin = QDoubleSpinBox()
-        self.search_range_spin.setRange(5.0, 30.0)
+        self.search_range_spin.setRange(5.0, 80.0)
         self.search_range_spin.setValue(40.0)
         self.search_range_spin.setSingleStep(1.0)
         search_range_layout.addWidget(self.search_range_spin)
@@ -1197,92 +1197,95 @@ class PupilCameraViewer(QWidget):
 
     def perform_alignment_nonblocking(self, pupil_x, pupil_z):
         """非阻塞的瞳孔对齐控制"""
-        target_x, target_z = self.target_pupil_position
+        if not self.pupil_alignment_lock.acquire(blocking=False):
+            return
+        try:
+            target_x, target_z = self.target_pupil_position
 
-        # 计算像素偏差
-        error_x = target_x - pupil_x
-        error_z = target_z - pupil_z
-        print(f"x方向偏差:{error_x} 像素"
-              f"y方向变差:{error_z} 像素")
+            # 计算像素偏差
+            error_x = target_x - pupil_x
+            error_z = target_z - pupil_z
 
-        # 检查对齐状态
-        self.x_aligned = abs(error_x) < self.alignment_tolerance
-        self.y_aligned = abs(error_z) < self.alignment_tolerance
+            # 检查对齐状态
+            self.x_aligned = abs(error_x) < self.alignment_tolerance
+            self.y_aligned = abs(error_z) < self.alignment_tolerance
 
-        if self.x_aligned and self.y_aligned:
-            self.alignment_status_text.setText(
-                f"对齐成功！\n"
-                f"X偏差: {error_x:.1f} 像素\n"
-                f"Y偏差: {error_z:.1f} 像素\n"
-                f"状态: 已对准"
-            )
+            if self.x_aligned and self.y_aligned:
+                self.alignment_status_text.setText(
+                    f"对齐成功！\n"
+                    f"X偏差: {error_x:.1f} 像素\n"
+                    f"Y偏差: {error_z:.1f} 像素\n"
+                    f"状态: 已对准"
+                )
+                self.pupil_alignment_mode = not self.pupil_alignment_mode
+                self.pupil_align_button.setText("开始瞳孔对齐")
+                self.pupil_align_button.setStyleSheet("QPushButton { background-color: #2196F3; color: white; }")
+                self.motor_controller.stop_all()
+                return
+
+            # 清理已完成的线程
+            move_x_steps = int(error_x * self.pixel_to_mm_ratio * 20000)
+            move_z_steps = int(error_z * self.pixel_to_mm_ratio * 6335)
+            self.motor_controller.move_to_relative("x", -move_x_steps)
+            self.motor_controller.move_to_relative("z", -move_z_steps)
+
             self.pupil_alignment_mode = not self.pupil_alignment_mode
             self.pupil_align_button.setText("开始瞳孔对齐")
             self.pupil_align_button.setStyleSheet("QPushButton { background-color: #2196F3; color: white; }")
-            self.motor_controller.stop_all()
-            return
 
-        # 清理已完成的线程
-        move_x_mm = int(error_x * self.pixel_to_mm_ratio * 20000)
-        move_z_mm = int(error_z * self.pixel_to_mm_ratio * 6335)
-        self.motor_controller.move_to_relative("x", -move_x_mm)
-        self.motor_controller.move_to_relative("z", -move_z_mm)
+            # ==================基于PID的调整====================
+            # # 清理已完成的线程
+            # self.motor_threads = [t for t in self.motor_threads if t.is_alive()]
+            #
+            # # X轴控制（非阻塞）
+            # if not self.x_aligned and len(self.motor_threads) < 2:  # 限制并发线程数
+            #     control_x = self.pid_x.update(error_x)
+            #     move_x_steps = int(control_x * self.pixel_to_mm_ratio * 20000)
+            #     print(f"x方向控制量:{control_x} 像素")
+            #
+            #     def move_x():
+            #         with self.motor_lock:
+            #             try:
+            #                 self.motor_controller.move_to_relative("x", move_x_steps)
+            #             except Exception as e:
+            #                 print(f"X轴移动错误: {e}")
+            #
+            #     t = threading.Thread(target=move_x, daemon=True)
+            #     t.start()
+            #     self.motor_threads.append(t)
+            #     # self.motor_controller.move_to_relative("x", move_x_steps)
+            #
+            # # Y轴控制（非阻塞）
+            # if not self.y_aligned and len(self.motor_threads) < 2:
+            #     control_y = self.pid_y.update(error_z)
+            #     move_z_steps = int(control_y * self.pixel_to_mm_ratio * 6300)
+            #     print(f"x方向控制量:{control_y} 像素")
+            #
+            #     def move_y():
+            #         with self.motor_lock:
+            #             try:
+            #                  self.motor_controller.move_to_relative("z", -move_z_steps)
+            #             except Exception as e:
+            #                 print(f"Y轴移动错误: {e}")
+            #
+            #     t = threading.Thread(target=move_y, daemon=True)
+            #     t.start()
+            #     self.motor_threads.append(t)
+            #     self.motor_controller.move_to_relative("z", -move_z_steps)
 
-        self.pupil_alignment_mode = not self.pupil_alignment_mode
-        self.pupil_align_button.setText("开始瞳孔对齐")
-        self.pupil_align_button.setStyleSheet("QPushButton { background-color: #2196F3; color: white; }")
+            # 更新状态显示
 
-        # ==================基于PID的调整====================
-        # # 清理已完成的线程
-        # self.motor_threads = [t for t in self.motor_threads if t.is_alive()]
-        #
-        # # X轴控制（非阻塞）
-        # if not self.x_aligned and len(self.motor_threads) < 2:  # 限制并发线程数
-        #     control_x = self.pid_x.update(error_x)
-        #     move_x_mm = int(control_x * self.pixel_to_mm_ratio * 20000)
-        #     print(f"x方向控制量:{control_x} 像素")
-        #
-        #     def move_x():
-        #         with self.motor_lock:
-        #             try:
-        #                 self.motor_controller.move_to_relative("x", move_x_mm)
-        #             except Exception as e:
-        #                 print(f"X轴移动错误: {e}")
-        #
-        #     t = threading.Thread(target=move_x, daemon=True)
-        #     t.start()
-        #     self.motor_threads.append(t)
-        #     # self.motor_controller.move_to_relative("x", move_x_mm)
-        #
-        # # Y轴控制（非阻塞）
-        # if not self.y_aligned and len(self.motor_threads) < 2:
-        #     control_y = self.pid_y.update(error_z)
-        #     move_z_mm = int(control_y * self.pixel_to_mm_ratio * 6300)
-        #     print(f"x方向控制量:{control_y} 像素")
-        #
-        #     def move_y():
-        #         with self.motor_lock:
-        #             try:
-        #                  self.motor_controller.move_to_relative("z", -move_z_mm)
-        #             except Exception as e:
-        #                 print(f"Y轴移动错误: {e}")
-        #
-        #     t = threading.Thread(target=move_y, daemon=True)
-        #     t.start()
-        #     self.motor_threads.append(t)
-        #     self.motor_controller.move_to_relative("z", -move_z_mm)
+            x_status = "已对准" if self.x_aligned else "调整中"
+            y_status = "已对准" if self.y_aligned else "调整中"
 
-        # 更新状态显示
-
-        x_status = "已对准" if self.x_aligned else "调整中"
-        y_status = "已对准" if self.y_aligned else "调整中"
-
-        self.alignment_status_text.setText(
-            f"正在对齐...\n"
-            f"X偏差: {error_x:.1f} 像素 - {x_status}\n"
-            f"Y偏差: {error_z:.1f} 像素 - {y_status}\n"
-            f"活动线程数: {len([t for t in self.motor_threads if t.is_alive()])}"
-        )
+            self.alignment_status_text.setText(
+                f"正在对齐...\n"
+                f"X偏差: {error_x:.1f} 像素 - {x_status}\n"
+                f"Y偏差: {error_z:.1f} 像素 - {y_status}\n"
+                f"活动线程数: {len([t for t in self.motor_threads if t.is_alive()])}"
+            )
+        except Exception as e:
+            self.alignment_status_text.setText(f"对齐控制错误: {e}")
 
     def start_mouse_control(self, target_x, target_y):
         """开始鼠标控制 - 发送一次移动指令"""
@@ -1402,8 +1405,10 @@ class PupilCameraViewer(QWidget):
             )
 
             # 如果开启了对齐模式，执行非阻塞对齐
-            if self.pupil_alignment_mode:
-                t = threading.Thread(target=self.perform_alignment_nonblocking, args=(x, y), daemon=True)
+            if self.pupil_alignment_mode and not self.pupil_alignment_lock.locked():
+                t = threading.Thread(
+                    target=self.perform_alignment_nonblocking, args=(x, y), daemon=True
+                )
                 t.start()
 
                 # self.perform_alignment_nonblocking(x, y)
@@ -1539,6 +1544,7 @@ class PupilCameraViewer(QWidget):
 
     def toggle_auto_focus(self):
         """切换自动对焦模式"""
+        # TODO: 处理自动对焦和瞳孔检测的冲突问题
         if not self.camera:
             QMessageBox.warning(self, "警告", "请先连接相机")
             return
