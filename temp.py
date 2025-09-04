@@ -1197,8 +1197,6 @@ class PupilCameraViewer(QWidget):
 
     def perform_alignment_nonblocking(self, pupil_x, pupil_z):
         """非阻塞的瞳孔对齐控制"""
-        if not self.pupil_alignment_lock.acquire(blocking=False):
-            return
         try:
             target_x, target_z = self.target_pupil_position
 
@@ -1405,13 +1403,13 @@ class PupilCameraViewer(QWidget):
             )
 
             # 如果开启了对齐模式，执行非阻塞对齐
-            if self.pupil_alignment_mode and not self.pupil_alignment_lock.locked():
-                t = threading.Thread(
-                    target=self.perform_alignment_nonblocking, args=(x, y), daemon=True
-                )
-                t.start()
-
-                # self.perform_alignment_nonblocking(x, y)
+            # if self.pupil_alignment_mode and not self.pupil_alignment_lock.locked():
+            #     t = threading.Thread(
+            #         target=self.perform_alignment_nonblocking, args=(x, y), daemon=True
+            #     )
+            #     t.start()
+            if self.pupil_alignment_mode:
+                self.perform_alignment_nonblocking(x, y)
         else:
             self.current_pupil_position = None
             self.display_normal_image(result.image)
@@ -1544,7 +1542,6 @@ class PupilCameraViewer(QWidget):
 
     def toggle_auto_focus(self):
         """切换自动对焦模式"""
-        # TODO: 处理自动对焦和瞳孔检测的冲突问题
         if not self.camera:
             QMessageBox.warning(self, "警告", "请先连接相机")
             return
@@ -1556,6 +1553,8 @@ class PupilCameraViewer(QWidget):
 
         if self.auto_focus_mode:
             # 如果正在进行瞳孔对齐，先停止
+            if self.pupil_detection_mode:
+                self.toggle_pupil_detection()
             if self.pupil_alignment_mode:
                 self.toggle_pupil_alignment()
 
@@ -1611,6 +1610,21 @@ class PupilCameraViewer(QWidget):
         """对焦完成处理"""
         self.last_focus_result = result
         self.auto_focus_mode = False
+
+        try:
+            if getattr(result, "success", False):
+                # 只有在成功对焦后再启动检测与对齐
+                # 根据当前状态，避免重复切换（只在未开启时开启）
+                if not self.pupil_detection_mode:
+                    self.toggle_pupil_detection()
+                if not self.pupil_alignment_mode:
+                    self.toggle_pupil_alignment()
+            else:
+                # 失败时的处理（如提示或重试策略）
+                pass
+        except Exception as e:
+            # 防御性处理，避免回调异常影响UI
+            print(f"on_focus_completed 处理出错: {e}")
 
         self.auto_focus_button.setText("开始自动对焦")
         self.auto_focus_button.setStyleSheet("QPushButton { background-color: #4CAF50; color: white; }")

@@ -76,12 +76,13 @@ class AutoFocusStateMachine(QObject):
             # 粗对焦参数
             'coarse_range': 20.0,  # mm
             'coarse_samples': 12,  # 采样点数
+            'coarse_drop_ratio': 0.10,  # 当后一采样点清晰度相对前一点下降超过该比例且两点均检测到瞳孔时提前停止
 
             # 精对焦参数
             'fine_range': 1.0,  # mm
             'fine_initial_step': 1.2,  # mm
-            'fine_min_step': 0.1,  # mm
-            'fine_max_iterations': 30,
+            'fine_min_step': 0.7,  # mm
+            'fine_max_iterations': 20,
 
             # 稳定性参数
             'settle_time': 0.1,  # 电机稳定时间(秒)
@@ -210,6 +211,7 @@ class AutoFocusStateMachine(QObject):
             self._update_progress(60)
 
             final_y, final_sharpness = self._fine_focus(best_coarse_z)
+            self._move_y_absolute_mm(final_y)
 
             if self.cancel_requested:
                 self._handle_cancel()
@@ -308,12 +310,16 @@ class AutoFocusStateMachine(QObject):
         """
         粗对焦搜索
         """
-        # TODO: 改进粗对焦清晰度搜索方法，如果清晰度下降就立即停止，并以下降前的最高位置作为精对焦的初始位置
         self.message_updated.emit(f"粗对焦搜索: {y_min:.2f}mm 到 {y_max:.2f}mm")
 
         n_samples = self.config['coarse_samples']
         positions = np.linspace(y_min, y_max, n_samples)
         results = []
+
+        # 维护上一采样点信息，用于下降检测
+        prev_pos = None
+        prev_sharpness = None
+        prev_has_pupil = None
 
         for i, y_pos in enumerate(positions):
             if self.cancel_requested:
@@ -327,14 +333,36 @@ class AutoFocusStateMachine(QObject):
 
             # 计算清晰度（多帧平均）
             sharpness = self._measure_sharpness_averaged()
+            has_pupil = self._check_pupil_detection()
 
             results.append({
                 'position': y_pos,
                 'sharpness': sharpness if sharpness is not None else 0,
-                'has_pupil': self._check_pupil_detection()
+                'has_pupil': has_pupil
             })
 
             self.message_updated.emit(f"位置 {y_pos:.2f}mm, 清晰度: {sharpness:.2f}")
+
+            # 早停逻辑：若前后两点均检测到瞳孔，且当前清晰度较上一点下降超过阈值，则停止并返回上一点
+            if (
+                    prev_pos is not None
+                    and prev_sharpness is not None
+                    and prev_has_pupil
+                    and has_pupil
+                    and sharpness is not None
+                    and prev_sharpness > 0
+            ):
+                drop_ratio = self.config.get('coarse_drop_ratio', 0.10)
+                if sharpness < prev_sharpness * (1.0 - drop_ratio):
+                    self.message_updated.emit(
+                        f"清晰度较上一点下降超过 {drop_ratio*100:.0f}%，提前停止粗对焦，采用位置 {prev_pos:.2f}mm"
+                    )
+                    return prev_pos
+
+            # 更新上一点记录
+            prev_pos = y_pos
+            prev_sharpness = sharpness if sharpness is not None else 0
+            prev_has_pupil = has_pupil
 
         # 选择最佳位置（优先选择检测到瞳孔的位置）
         pupil_results = [r for r in results if r['has_pupil']]
@@ -347,11 +375,11 @@ class AutoFocusStateMachine(QObject):
             return None
 
         # 可选：使用二次拟合预测更精确的峰值位置
-        # if len(results) >= 3:
-        #     predicted = self._predict_peak_position(results)
-        #     if predicted and y_min <= predicted <= y_max:
-        #         return predicted
-        #
+        if len(results) >= 3:
+            predicted = self._predict_peak_position(results)
+            if predicted and y_min <= predicted <= y_max:
+                return predicted
+
         return best['position']
 
     def _fine_focus(self, start_y: float) -> Tuple[Optional[float], Optional[float]]:
@@ -386,7 +414,7 @@ class AutoFocusStateMachine(QObject):
                 self._move_y_absolute_mm(y_pos)
                 time.sleep(self.config['settle_time'])
                 if k == 0:
-                    time.sleep(1)
+                    time.sleep(1.5)
                     k = 1
 
                 sharpness = self._measure_sharpness_averaged(require_pupil=True)
