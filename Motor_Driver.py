@@ -57,6 +57,7 @@ class Stage_LinearMovement(DM2C_Driver):
         super().reset()
         self.write(DM2C.DI2, DM2C.DI_LimitNegative_NormallyOpen)
         self.write(DM2C.DI3, DM2C.DI_LimitPositive_NormallyOpen)
+        self.setZero()
 
     def goAbsolutePosition(self, position):
         self.app.setPosition(position)
@@ -94,6 +95,7 @@ class Stage_RotaryMovement(DM2C_Driver):
     def reset(self):
         super().reset()
         self.write(DM2C.DI4, DM2C.DI_Origin_NormallyClose)
+
 
 if __name__ == '__main__':
     class Device_Stage(object):

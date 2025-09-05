@@ -187,9 +187,9 @@ class MotorController:
             'driver': DM2C.Driver_02,
             'high_speed': 500,
             'low_speed': 100,
-            'path_speed': 800,  # 假设与X轴相同，如果不同请修改
-            'path_accel': 80,
-            'path_decel': 80,
+            'path_speed': 1100,  # 假设与X轴相同，如果不同请修改
+            'path_accel': 50,
+            'path_decel': 50,
         },
         'z': {
             'driver': DM2C.Driver_03,
@@ -221,7 +221,8 @@ class MotorController:
             # 根据配置设置路径和速度
             axis_controller.setRelativePositionPath(speed=config['path_speed'], acceleration=config['path_accel'],
                                                     deceleration=config['path_decel'])
-            axis_controller.setAbsolutePositionPath()
+            axis_controller.setAbsolutePositionPath(speed=config['path_speed'], acceleration=config['path_accel'],
+                                                    deceleration=config['path_decel'])
             axis_controller.setSpeedPath()
             axis_controller.setJogSpeed(config['low_speed'], config['high_speed'])
 

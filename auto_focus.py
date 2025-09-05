@@ -11,6 +11,8 @@ from typing import Optional, Tuple, Dict, List
 from dataclasses import dataclass
 import threading
 from PySide6.QtCore import QObject, Signal
+from scipy.optimize import curve_fit
+
 
 
 class FocusState(Enum):
@@ -33,6 +35,9 @@ class FocusResult:
     total_time: float
     message: str
 
+def gaussian(x, A, mu, sigma):
+    """一个标准的高斯函数模型"""
+    return A * np.exp(-(x - mu)**2 / (2 * sigma**2))
 
 class AutoFocusStateMachine(QObject):
     """
@@ -77,13 +82,13 @@ class AutoFocusStateMachine(QObject):
 
             # 粗对焦参数
             'coarse_range': 20.0,  # mm
-            'coarse_samples': 12,  # 采样点数
+            'coarse_samples': 15,  # 采样点数
             'coarse_drop_ratio': 0.10,  # 当后一采样点清晰度相对前一点下降超过该比例且两点均检测到瞳孔时提前停止
 
             # 精对焦参数
             'fine_range': 1.0,  # mm
-            'fine_samples': 7,  # 采样点数（必须为奇数）
-            'fine_initial_step': 0.5,  # mm
+            'fine_samples': 9,  # 采样点数（必须为奇数）
+            'fine_initial_step': 0.7,  # mm
             'fine_min_step': 0.7,  # mm
             'fine_max_iterations': 20,
 
@@ -169,6 +174,7 @@ class AutoFocusStateMachine(QObject):
         执行完整的对焦序列
         """
         start_time = time.time()
+
 
         try:
             if self.last_best_position is not None:
@@ -276,19 +282,20 @@ class AutoFocusStateMachine(QObject):
             # 直接绝对移动到目标 mm 位置
             self._move_y_absolute_mm(y_pos)
             time.sleep(self.config['settle_time'])
-            if i == 1:
-                time.sleep(0.5)
+            if i == 0:
+                while self.motor._get_axis("y").isRunning():
+                    time.sleep(0.1)
 
             if self._check_pupil_detection():
                 pupil_positions.append(y_pos)
 
                 if i == 0:
                     # 中心点就检测到瞳孔，直接返回一个小范围
-                    return y_pos - 10, y_pos + 10
+                    return y_pos - 20, y_pos + 20
 
                 # 找到瞳孔后，在附近细化搜索边界
                 if len(pupil_positions) == 1:
-                    return y_pos - 10, y_pos + 10
+                    return y_pos - 20, y_pos + 20
                     # # 找到第一个瞳孔位置，向两边扩展搜索
                     # for dy in np.arange(fine_step, 20.0, fine_step):
                     #     # 向正方向
@@ -338,9 +345,15 @@ class AutoFocusStateMachine(QObject):
 
             self._move_y_absolute_mm(y_pos)
             time.sleep(self.config['settle_time'])
+            if i == 0:
+                while self.motor._get_axis("y").isRunning():
+                    time.sleep(0.1)
 
-            sharpness = self._measure_sharpness_averaged()
             has_pupil = self._check_pupil_detection()
+            if has_pupil:
+                sharpness = self._measure_sharpness_averaged(require_pupil=True)
+            else:
+                sharpness = self._measure_sharpness_averaged()
 
             current_result = {
                 'position': y_pos,
@@ -408,6 +421,7 @@ class AutoFocusStateMachine(QObject):
         self.message_updated.emit(f"回退策略: 采用最佳采样点 {best_point['position']:.3f}mm")
         return best_point['position']
 
+
     def _fine_focus(self, start_y: float) -> Tuple[Optional[float], Optional[float]]:
         """
         精细对焦（基于二次曲线拟合）
@@ -438,6 +452,10 @@ class AutoFocusStateMachine(QObject):
             # 移动电机并测量清晰度
             self._move_y_absolute_mm(y_pos)
             time.sleep(self.config['settle_time'])
+            if i == 0:
+                while self.motor._get_axis("y").isRunning():
+                    time.sleep(0.1)
+
 
             sharpness = self._measure_sharpness_averaged(require_pupil=True)
 
@@ -462,35 +480,61 @@ class AutoFocusStateMachine(QObject):
             self._move_y_absolute_mm(best_y)
             return best_y, best_sharpness
 
-        # 提取数据用于拟合
+        # 1. 定义高斯/正态分布函数模型
+        def gaussian(x, A, mu, sigma):
+            """一个标准的高斯函数模型"""
+            return A * np.exp(-(x - mu) ** 2 / (2 * sigma ** 2))
+
+        # 提取数据用于拟合 (此部分与您的原代码相同)
         x_data = np.array([d['position'] for d in sampled_data])
         y_data = np.array([d['sharpness'] for d in sampled_data])
 
         best_y = None
 
         try:
-            # 进行二次多项式拟合: y = a*x^2 + b*x + c
-            # coeffs 将会是 [a, b, c]
-            coeffs = np.polyfit(x_data, y_data, 2)
-            a = coeffs[0]
+            # 2. 为参数提供合理的初始猜测值
+            #    振幅(A)猜测为数据中的最大值
+            #    均值(mu)猜测为最大值对应的位置
+            #    标准差(sigma)猜测为x数据的标准差，这是一个稳健的初始值
+            initial_guess = [
+                np.max(y_data),
+                x_data[np.argmax(y_data)],
+                np.std(x_data)
+            ]
 
-            # 理论上，清晰度曲线的抛物线开口必须向下 (a < 0)
-            if a < 0:
-                # 计算抛物线的顶点位置 x = -b / (2a)
-                peak_y = -coeffs[1] / (2 * a)
+            # 3. 执行高斯曲线拟合
+            #    popt 数组中将包含优化后的参数 [A, mu, sigma]
+            popt, pcov = curve_fit(gaussian, x_data, y_data, p0=initial_guess)
 
-                # 合理性检查：确保预测出的峰值位置在我们的采样区间内，避免异常的外插值
-                min_pos, max_pos = positions[0], positions[-1]
-                if min_pos <= peak_y <= max_pos:
-                    best_y = peak_y
-                    self.message_updated.emit(f"曲线拟合成功！理论最佳位置: {best_y:.3f}mm")
-                else:
-                    self.message_updated.emit(f"预测位置 {peak_y:.3f}mm 超出采样范围，拟合结果不可靠。")
+            # 提取拟合后的参数
+            A_fit, mu_fit, sigma_fit = popt
+
+            # 4. 合理性检查：
+            #    - 振幅 A 和宽度 sigma 应该为正数
+            #    - 预测的峰值位置 mu 应该落在采样区间内
+            min_pos, max_pos = np.min(x_data), np.max(x_data)
+
+            if A_fit > 0 and sigma_fit > 0 and min_pos <= mu_fit <= max_pos:
+                # 拟合成功且结果合理，mu_fit 就是我们要找的最佳位置
+                best_y = mu_fit
+                self.message_updated.emit(f"高斯拟合成功！理论最佳位置: {best_y:.3f}mm")
             else:
-                self.message_updated.emit("拟合曲线开口向上，无法找到峰值。")
+                # 构造详细的错误信息
+                reasons = []
+                if A_fit <= 0:
+                    reasons.append("振幅非正")
+                if sigma_fit <= 0:
+                    reasons.append("宽度非正")
+                if not (min_pos <= mu_fit <= max_pos):
+                    reasons.append("预测峰值超出采样范围")
+                self.message_updated.emit(f"高斯拟合结果不可靠: {', '.join(reasons)}。")
 
-        except np.linalg.LinAlgError:
-            self.message_updated.emit("曲线拟合计算失败。")
+        except RuntimeError:
+            # curve_fit 在无法收敛时会抛出 RuntimeError
+            self.message_updated.emit("高斯曲线拟合失败，数据可能不呈钟形。")
+        except Exception as e:
+            # 捕获其他可能的未知错误
+            self.message_updated.emit(f"拟合计算时发生未知错误: {e}")
 
         # 如果拟合失败或结果不可靠，则采用回退策略：选择采样的所有点中清晰度最高的那个点
         if best_y is None:
@@ -502,7 +546,8 @@ class AutoFocusStateMachine(QObject):
         self._update_progress(95)
         self._move_y_absolute_mm(best_y)
         # 最终移动后可以稍微多等待一会，确保电机完全稳定
-        time.sleep(self.config['settle_time'] * 2)
+        while self.motor._get_axis("y").isRunning():
+            time.sleep(0.1)
 
         final_sharpness = self._measure_sharpness_averaged(require_pupil=True)
 
