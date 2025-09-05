@@ -66,6 +66,8 @@ class AutoFocusStateMachine(QObject):
         self.is_running = False
         self.cancel_requested = False
 
+        self.last_best_position = None # 上次对焦位置
+
         # 对焦参数（可调整）
         self.config = {
             # 瞳孔搜索参数
@@ -80,7 +82,8 @@ class AutoFocusStateMachine(QObject):
 
             # 精对焦参数
             'fine_range': 1.0,  # mm
-            'fine_initial_step': 1.2,  # mm
+            'fine_samples': 7,  # 采样点数（必须为奇数）
+            'fine_initial_step': 0.5,  # mm
             'fine_min_step': 0.7,  # mm
             'fine_max_iterations': 20,
 
@@ -168,8 +171,11 @@ class AutoFocusStateMachine(QObject):
         start_time = time.time()
 
         try:
-            # 获取当前Y轴位置(步->mm)
-            current_y = self._get_y_mm()
+            if self.last_best_position is not None:
+                current_y = self.last_best_position
+            else:
+                # 获取当前Y轴位置(步->mm)
+                current_y = self._get_y_mm()
             self.message_updated.emit(f"开始自动对焦，当前位置: {current_y:.2f}mm")
 
             # 阶段1：搜索瞳孔
@@ -201,6 +207,7 @@ class AutoFocusStateMachine(QObject):
                 return
 
             if best_coarse_z is None:
+                self.last_best_position = None
                 self._handle_focus_failed("粗对焦失败")
                 return
 
@@ -218,6 +225,7 @@ class AutoFocusStateMachine(QObject):
                 return
 
             if final_y is None:
+                self.last_best_position = None
                 self._handle_focus_failed("精对焦失败")
                 return
 
@@ -226,6 +234,7 @@ class AutoFocusStateMachine(QObject):
             self._update_progress(100)
 
             elapsed_time = time.time() - start_time
+            self.last_best_position = final_y
             result = FocusResult(
                 success=True,
                 final_position=final_y,
@@ -308,152 +317,208 @@ class AutoFocusStateMachine(QObject):
 
     def _coarse_focus(self, y_min: float, y_max: float) -> Optional[float]:
         """
-        粗对焦搜索
+        粗对焦搜索（带增强的提前停止逻辑）。
+        在扫描过程中动态检测清晰度峰值，一旦发现峰值模式立即停止并进行拟合。
         """
         self.message_updated.emit(f"粗对焦搜索: {y_min:.2f}mm 到 {y_max:.2f}mm")
 
         n_samples = self.config['coarse_samples']
         positions = np.linspace(y_min, y_max, n_samples)
-        results = []
 
-        # 维护上一采样点信息，用于下降检测
-        prev_pos = None
-        prev_sharpness = None
-        prev_has_pupil = None
+        all_results = []
+        # 使用一个列表来维护最近的3个有效（检测到瞳孔且清晰度大于0）结果
+        recent_valid_results = []
+
+        predicted_peak_pos = None
 
         for i, y_pos in enumerate(positions):
             if self.cancel_requested:
                 return None
-            self._update_progress(30 + int(30 * i / len(positions)))
+            self._update_progress(30 + int(30 * (i + 1) / len(positions)))
 
             self._move_y_absolute_mm(y_pos)
             time.sleep(self.config['settle_time'])
-            if i == 0:
-                time.sleep(0.5)
 
-            # 计算清晰度（多帧平均）
             sharpness = self._measure_sharpness_averaged()
             has_pupil = self._check_pupil_detection()
 
-            results.append({
+            current_result = {
                 'position': y_pos,
                 'sharpness': sharpness if sharpness is not None else 0,
                 'has_pupil': has_pupil
-            })
+            }
+            all_results.append(current_result)
+            self.message_updated.emit(f"位置 {y_pos:.2f}mm, 清晰度: {current_result['sharpness']:.2f}")
 
-            self.message_updated.emit(f"位置 {y_pos:.2f}mm, 清晰度: {sharpness:.2f}")
+            # 只有当检测到瞳孔且清晰度有效时，才将其加入用于峰值判断的列表
+            if current_result['has_pupil'] and current_result['sharpness'] > 0:
+                recent_valid_results.append(current_result)
+                # 保持列表长度不超过3
+                if len(recent_valid_results) > 3:
+                    recent_valid_results.pop(0)
 
-            # 早停逻辑：若前后两点均检测到瞳孔，且当前清晰度较上一点下降超过阈值，则停止并返回上一点
-            if (
-                    prev_pos is not None
-                    and prev_sharpness is not None
-                    and prev_has_pupil
-                    and has_pupil
-                    and sharpness is not None
-                    and prev_sharpness > 0
-            ):
-                drop_ratio = self.config.get('coarse_drop_ratio', 0.10)
-                if sharpness < prev_sharpness * (1.0 - drop_ratio):
-                    self.message_updated.emit(
-                        f"清晰度较上一点下降超过 {drop_ratio*100:.0f}%，提前停止粗对焦，采用位置 {prev_pos:.2f}mm"
-                    )
-                    return prev_pos
+            # --- 增强的提前停止逻辑 ---
+            if len(recent_valid_results) == 3:
+                p1, p2, p3 = recent_valid_results
+                # 检查是否形成 S1 < S2 > S3 的峰值模式
+                if p1['sharpness'] < p2['sharpness'] and p2['sharpness'] > p3['sharpness']:
+                    self.message_updated.emit(f"检测到清晰度峰值模式，提前停止粗对焦。")
 
-            # 更新上一点记录
-            prev_pos = y_pos
-            prev_sharpness = sharpness if sharpness is not None else 0
-            prev_has_pupil = has_pupil
+                    # 使用这三点进行二次拟合来预测精确峰值
+                    predicted_peak_pos = self._predict_peak_position(recent_valid_results)
 
-        # 选择最佳位置（优先选择检测到瞳孔的位置）
-        pupil_results = [r for r in results if r['has_pupil']]
+                    # 合理性检查：确保预测值在形成峰值的三个点之间
+                    if predicted_peak_pos and (p1['position'] <= predicted_peak_pos <= p3['position']):
+                        self.message_updated.emit(f"拟合预测峰值位于: {predicted_peak_pos:.3f}mm")
+                        # 成功找到峰值，跳出循环
+                        break
+                    else:
+                        # 如果拟合失败或结果不可靠，则回退到采用三个点中清晰度最高的那个点
+                        self.message_updated.emit(f"拟合失败或结果不可靠，采用峰值采样点 {p2['position']:.3f}mm")
+                        predicted_peak_pos = p2['position']
+                        break
 
-        if pupil_results:
-            best = max(pupil_results, key=lambda x: x['sharpness'])
-        elif results:
-            best = max(results, key=lambda x: x['sharpness'])
-        else:
-            return None
+        # --- 循环结束后处理结果 ---
 
-        # 可选：使用二次拟合预测更精确的峰值位置
-        if len(results) >= 3:
-            predicted = self._predict_peak_position(results)
-            if predicted and y_min <= predicted <= y_max:
-                return predicted
+        # 如果通过提前停止逻辑成功找到了峰值，直接返回结果
+        if predicted_peak_pos is not None:
+            return predicted_peak_pos
 
-        return best['position']
+        # --- 回退策略：如果循环正常结束（未提前停止），则分析所有采集到的数据 ---
+        self.message_updated.emit("完成全范围扫描，正在分析最佳位置...")
+
+        # 优先选择那些检测到瞳孔的结果进行分析
+        pupil_results = [r for r in all_results if r['has_pupil'] and r['sharpness'] > 0]
+
+        # 如果没有任何检测到瞳孔的结果，则放宽条件，使用所有结果
+        if not pupil_results:
+            if not all_results: return None  # 没有任何数据
+            pupil_results = all_results
+
+        # 尝试使用所有有效的采样点进行一次全局拟合
+        if len(pupil_results) >= 3:
+            predicted_peak = self._predict_peak_position(pupil_results)
+            # 检查预测值是否在扫描范围内
+            if predicted_peak and y_min <= predicted_peak <= y_max:
+                self.message_updated.emit(f"全局拟合预测峰值位于: {predicted_peak:.3f}mm")
+                return predicted_peak
+
+        # 如果拟合失败或数据点不足，则返回单个清晰度最高的采样点位置
+        best_point = max(pupil_results, key=lambda x: x['sharpness'])
+        self.message_updated.emit(f"回退策略: 采用最佳采样点 {best_point['position']:.3f}mm")
+        return best_point['position']
 
     def _fine_focus(self, start_y: float) -> Tuple[Optional[float], Optional[float]]:
         """
-        精细对焦（改进的爬山算法）
+        精细对焦（基于二次曲线拟合）
+        通过采集焦点附近的多个点，拟合出清晰度曲线，并直接计算出峰值位置。
         """
-        self.message_updated.emit(f"开始精对焦，初始位置: {start_y:.2f}mm")
+        self.message_updated.emit(f"开始精对焦，中心位置: {start_y:.2f}mm")
 
-        current_y = start_y
-        step = self.config['fine_initial_step']
-        min_step = self.config['fine_min_step']
-        max_iterations = self.config['fine_max_iterations']
+        # 1. 定义采样参数
+        num_samples = self.config['fine_samples']
+        step_mm = self.config['fine_initial_step']
+        half_range = (num_samples - 1) / 2 * step_mm
 
-        best_y = current_y
-        best_sharpness = 0
-        no_improvement_count = 0
+        # 从后往前生成采样点序列
+        positions = np.linspace(start_y - half_range, start_y + half_range, num_samples)
 
-        k = 0
+        sampled_data = []
 
-        for iteration in range(max_iterations):
+        # 2. 采集清晰度数据
+        self.message_updated.emit(f"正在 {positions[0]:.2f}mm 到 {positions[-1]:.2f}mm 范围内采样...")
+        for i, y_pos in enumerate(positions):
             if self.cancel_requested:
                 return None, None
 
-            progress = 60 + int(40 * iteration / max_iterations)
+            # 更新进度条 (精对焦阶段占60%到90%的进度)
+            progress = 60 + int(30 * (i + 1) / num_samples)
             self._update_progress(progress)
 
-            # 评估三个位置
-            positions = [current_y - step, current_y, current_y + step]
-            sharpness_values = []
+            # 移动电机并测量清晰度
+            self._move_y_absolute_mm(y_pos)
+            time.sleep(self.config['settle_time'])
 
-            for y_pos in positions:
-                self._move_y_absolute_mm(y_pos)
-                time.sleep(self.config['settle_time'])
-                if k == 0:
-                    time.sleep(1.5)
-                    k = 1
+            sharpness = self._measure_sharpness_averaged(require_pupil=True)
 
-                sharpness = self._measure_sharpness_averaged(require_pupil=True)
-                sharpness_values.append(sharpness if sharpness is not None else 0)
-
-            # 找最佳位置
-            max_idx = np.argmax(sharpness_values)
-            max_sharpness = sharpness_values[max_idx]
-
-            self.message_updated.emit(
-                f"迭代 {iteration + 1}: 步长={step:.3f}mm, "
-                f"清晰度=[{sharpness_values[0]:.2f}, {sharpness_values[1]:.2f}, {sharpness_values[2]:.2f}]"
-            )
-
-            # 更新最佳记录
-            if max_sharpness > best_sharpness * (1 + self.config['improvement_threshold']):
-                best_sharpness = max_sharpness
-                best_y = positions[max_idx]
-                no_improvement_count = 0
+            if sharpness is not None and sharpness > 0:
+                sampled_data.append({'position': y_pos, 'sharpness': sharpness})
+                self.message_updated.emit(f"采样点 {i + 1}/{num_samples}: 位置={y_pos:.3f}mm, 清晰度={sharpness:.2f}")
             else:
-                no_improvement_count += 1
+                self.message_updated.emit(f"采样点 {i + 1}/{num_samples}: 位置={y_pos:.3f}mm, 未检测到瞳孔或清晰度无效")
 
-            # 判断收敛
-            if max_idx == 1:  # 中心点最佳
-                step *= 0.5
-                if step < min_step:
-                    self.message_updated.emit("达到最小步长，对焦完成")
-                    break
+        # 3. 数据校验与曲线拟合
+        # 必须至少有3个有效数据点才能进行二次拟合
+        if len(sampled_data) < 3:
+            self.message_updated.emit("有效采样点不足，无法进行曲线拟合")
+            # 如果一个有效点都没有，则对焦失败
+            if not sampled_data:
+                return None, None
+            # 如果有少量点，则退回到选择清晰度最高的那个点作为最佳位置
+            best_sampled_point = max(sampled_data, key=lambda x: x['sharpness'])
+            best_y = best_sampled_point['position']
+            best_sharpness = best_sampled_point['sharpness']
+            self.message_updated.emit(f"回退策略：移动到最佳采样点 {best_y:.3f}mm")
+            self._move_y_absolute_mm(best_y)
+            return best_y, best_sharpness
+
+        # 提取数据用于拟合
+        x_data = np.array([d['position'] for d in sampled_data])
+        y_data = np.array([d['sharpness'] for d in sampled_data])
+
+        best_y = None
+
+        try:
+            # 进行二次多项式拟合: y = a*x^2 + b*x + c
+            # coeffs 将会是 [a, b, c]
+            coeffs = np.polyfit(x_data, y_data, 2)
+            a = coeffs[0]
+
+            # 理论上，清晰度曲线的抛物线开口必须向下 (a < 0)
+            if a < 0:
+                # 计算抛物线的顶点位置 x = -b / (2a)
+                peak_y = -coeffs[1] / (2 * a)
+
+                # 合理性检查：确保预测出的峰值位置在我们的采样区间内，避免异常的外插值
+                min_pos, max_pos = positions[0], positions[-1]
+                if min_pos <= peak_y <= max_pos:
+                    best_y = peak_y
+                    self.message_updated.emit(f"曲线拟合成功！理论最佳位置: {best_y:.3f}mm")
+                else:
+                    self.message_updated.emit(f"预测位置 {peak_y:.3f}mm 超出采样范围，拟合结果不可靠。")
             else:
-                current_y = positions[max_idx]
+                self.message_updated.emit("拟合曲线开口向上，无法找到峰值。")
 
-            # 早停条件
-            if no_improvement_count >= 3:
-                self.message_updated.emit("清晰度无明显改善，对焦完成")
-                break
+        except np.linalg.LinAlgError:
+            self.message_updated.emit("曲线拟合计算失败。")
 
-        # 移动到最佳位置
+        # 如果拟合失败或结果不可靠，则采用回退策略：选择采样的所有点中清晰度最高的那个点
+        if best_y is None:
+            best_sampled_point = max(sampled_data, key=lambda x: x['sharpness'])
+            best_y = best_sampled_point['position']
+            self.message_updated.emit(f"回退策略：移动到最佳采样点 {best_y:.3f}mm")
+
+        # 4. 移动到最终计算出的最佳位置并获取最终清晰度
+        self._update_progress(95)
         self._move_y_absolute_mm(best_y)
-        return best_y, best_sharpness
+        # 最终移动后可以稍微多等待一会，确保电机完全稳定
+        time.sleep(self.config['settle_time'] * 2)
+
+        final_sharpness = self._measure_sharpness_averaged(require_pupil=True)
+
+        # 如果在最终位置未能测得清晰度（例如，由于微小误差导致瞳孔丢失），
+        # 则使用拟合曲线的理论峰值或采样的最大值作为最终清晰度
+        if final_sharpness is None:
+            if best_y is not None and 'peak_y' in locals() and best_y == peak_y:
+                # 使用拟合函数计算理论清晰度
+                final_sharpness = np.polyval(coeffs, best_y)
+            else:
+                # 使用采样到的最大清晰度
+                final_sharpness = max(y_data)
+
+        self.message_updated.emit(f"精对焦完成。最终位置: {best_y:.3f}mm, 清晰度: {final_sharpness:.2f}")
+
+        return best_y, final_sharpness
 
     def _measure_sharpness_averaged(self, require_pupil: bool = False) -> Optional[float]:
         """
@@ -484,7 +549,7 @@ class AutoFocusStateMachine(QObject):
         检查当前位置是否能检测到瞳孔
         """
         detected_count = 0
-        check_frames = 5
+        check_frames = 2
 
         for _ in range(check_frames):
             img = self.get_image()
@@ -492,7 +557,7 @@ class AutoFocusStateMachine(QObject):
             if pupil_circle is not None:
                 detected_count += 1
 
-        return detected_count >= check_frames * self.config['pupil_detect_threshold']
+        return detected_count >= 1
 
     def _generate_spiral_positions(self, center: float, max_range: float, step: float) -> List[float]:
         """
@@ -567,3 +632,114 @@ class AutoFocusStateMachine(QObject):
             message=reason
         )
         self.focus_completed.emit(result)
+
+    # 等待函数，确保电机稳定，可以替换sleep函数
+    def _wait_settle(self, drop_frames: int = 3, var_threshold: float = 20):
+        """
+        等待运动稳定：丢弃前几帧，或者直到清晰度方差稳定。
+        """
+        sharpness_values = []
+        for _ in range(drop_frames + 5):  # 最多检查若干帧
+            frame = self.get_image()
+            if frame is None:
+                continue
+            s = self.compute_sharpness(frame)
+            sharpness_values.append(s)
+            if len(sharpness_values) >= drop_frames:
+                recent = sharpness_values[-drop_frames:]
+                if np.var(recent) < var_threshold:
+                    break
+        return
+
+    # 依据清晰度曲线的单峰性，基于黄金分割的精对焦方法，可以测试效果
+    def _fine_focus_test(self, y_start: float, y_end: float, tol: float = 0.4, max_iter: int = 15) -> Tuple [Optional[float], Optional[float]]:
+        """
+        精细对焦（基于黄金分割搜索）
+        - 在区间 [y_start, y_end] 内使用黄金分割搜索寻找清晰度最大的位置
+        - 包含异常处理与回退逻辑
+        """
+        self.message_updated.emit(f"开始精对焦，范围: {y_start:.2f}mm ~ {y_end:.2f}mm")
+
+        phi = (1 + 5 ** 0.5) / 2
+        sampled_data = []
+
+        # 初始化两个点
+        c = y_end - (y_end - y_start) / phi
+        d = y_start + (y_end - y_start) / phi
+
+        # 移动到 c
+        self._move_y_absolute_mm(c)
+        self._wait_settle()
+        fc = self._measure_sharpness_averaged(require_pupil=True)
+        if fc is not None and fc > 0:
+            sampled_data.append({'position': c, 'sharpness': fc})
+
+        # 移动到 d
+        self._move_y_absolute_mm(d)
+        self._wait_settle()
+        fd = self._measure_sharpness_averaged(require_pupil=True)
+        if fd is not None and fd > 0:
+            sampled_data.append({'position': d, 'sharpness': fd})
+
+        # 主循环
+        for i in range(max_iter):
+            if self.cancel_requested:
+                return None, None
+
+            if abs(y_end - y_start) < tol:
+                break
+
+            # 更新进度条 (精对焦阶段占 60%~90%)
+            progress = 60 + int(30 * (i + 1) / max_iter)
+            self._update_progress(progress)
+
+            if fc is None or fd is None:
+                self.message_updated.emit("检测失败，清晰度无效，提前结束精对焦")
+                break
+
+            if fc > fd:
+                # 峰值在 [y_start, d]
+                y_end, d, fd = d, c, fc
+                c = y_end - (y_end - y_start) / phi
+                self._move_y_absolute_mm(c)
+                self._wait_settle()
+                fc = self._measure_sharpness_averaged()
+                if fc is not None and fc > 0:
+                    sampled_data.append({'position': c, 'sharpness': fc})
+            else:
+                # 峰值在 [c, y_end]
+                y_start, c, fc = c, d, fd
+                d = y_start + (y_end - y_start) / phi
+                self._move_y_absolute_mm(d)
+                self._wait_settle()
+                fd = self._measure_sharpness_averaged()
+                if fd is not None and fd > 0:
+                    sampled_data.append({'position': d, 'sharpness': fd})
+
+        # 判断是否有有效数据
+        if not sampled_data:
+            self.message_updated.emit("精对焦失败：没有有效的清晰度数据")
+            return None, None
+
+        # 选出采样点中清晰度最高的
+        best_sampled_point = max(sampled_data, key=lambda x: x['sharpness'])
+        best_y = best_sampled_point['position']
+
+        self.message_updated.emit(f"黄金分割搜索结束，最佳采样点位置 {best_y:.3f}mm")
+
+        # 4. 移动到最终最佳点，确认清晰度
+        self._update_progress(95)
+        self._move_y_absolute_mm(best_y)
+        self._wait_settle()
+
+        final_sharpness = self._measure_sharpness_averaged(require_pupil=True)
+
+        if final_sharpness is None or final_sharpness <= 0:
+            # 如果检测不到，就回退到采样得到的最大值
+            final_sharpness = best_sampled_point['sharpness']
+            self.message_updated.emit(f"最终确认失败，使用采样清晰度 {final_sharpness:.2f}")
+        else:
+            self.message_updated.emit(f"精对焦完成。最终位置: {best_y:.3f}mm, 清晰度: {final_sharpness:.2f}")
+
+        return best_y, final_sharpness
+

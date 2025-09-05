@@ -28,6 +28,10 @@ else:
     plugin_path = os.path.join(os.path.dirname(QtCore.__file__), "plugins", "platforms")
 os.environ['QT_QPA_PLATFORM_PLUGIN_PATH'] = plugin_path
 
+# TODO: 改进方向：
+# 1.改进瞳孔搜索的初始位置，如果上次对焦成功了，从上次对焦成功的位置开始
+# 2.改进精对焦过程，可以采用固定采样多个位置后拟合二次曲线的方式
+# 3.改进粗对焦过程，保留三个结果，如果三个结果呈现山峰状，直接退出
 
 # ============窗口滑动类===========
 # 在文件开头，QTimer, Qt 导入之后添加这个类：
@@ -559,7 +563,7 @@ def detect_pupil_contour(img: np.ndarray) -> Optional[Tuple[int, int, int]]:
             end = time.perf_counter()
             # print(f"{thresh_val}拟合圆执行时间: {(end - start) * 1000:.2f} ms")
 
-            if radius < r_threshold or radius > 1.8 * r_threshold:  # 半径范围检查
+            if radius < r_threshold or radius > 2.5 * r_threshold:  # 半径范围检查
                 continue
 
             # 计算轮廓质量得分
