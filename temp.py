@@ -789,15 +789,7 @@ class PupilCameraViewer(QWidget):
         self.focus_progress_bar.setValue(0)
         left_column.addWidget(self.focus_progress_bar)
 
-        # Sharpness label
-        self.sharpness_label = QLabel("Sharpness: --")
-        left_column.addWidget(self.sharpness_label)
 
-        # Focus info text
-        self.focus_info_text = QTextEdit()
-        self.focus_info_text.setMaximumHeight(100)
-        self.focus_info_text.setReadOnly(True)
-        left_column.addWidget(self.focus_info_text)
 
         # Focus parameter group (optional)
         focus_params_group = QGroupBox("Focus Parameters")
@@ -808,20 +800,20 @@ class PupilCameraViewer(QWidget):
         search_range_layout.addWidget(QLabel("Search Range (mm):"))
         self.search_range_spin = QDoubleSpinBox()
         self.search_range_spin.setRange(5.0, 80.0)
-        self.search_range_spin.setValue(40.0)
+        self.search_range_spin.setValue(50.0)
         self.search_range_spin.setSingleStep(1.0)
         search_range_layout.addWidget(self.search_range_spin)
         focus_params_layout.addLayout(search_range_layout)
 
         # Precision setting
         precision_layout = QHBoxLayout()
-        precision_layout.addWidget(QLabel("Focus Precision (mm):"))
+        # precision_layout.addWidget(QLabel("Focus Precision (mm):"))
         self.precision_spin = QDoubleSpinBox()
         self.precision_spin.setRange(0.01, 1)
         self.precision_spin.setValue(0.1)
         self.precision_spin.setSingleStep(0.02)
         self.precision_spin.setDecimals(3)
-        precision_layout.addWidget(self.precision_spin)
+        # precision_layout.addWidget(self.precision_spin)
         focus_params_layout.addLayout(precision_layout)
 
         focus_params_group.setLayout(focus_params_layout)
@@ -881,12 +873,12 @@ class PupilCameraViewer(QWidget):
         self.pid_y_kd.setValidator(QDoubleValidator(0, 10, 3))
         pid_layout.addWidget(self.pid_y_kd, 2, 3)
 
-        right_column.addLayout(pid_layout)
+        # right_column.addLayout(pid_layout)
 
         # 更新PID参数按钮
         self.update_pid_button = QPushButton("Update PID Parameters")
         self.update_pid_button.clicked.connect(self.update_pid_parameters)
-        right_column.addWidget(self.update_pid_button)
+        # right_column.addWidget(self.update_pid_button)
 
         # y轴移动
         self.ymotor_step_label = QLabel("Step:")
@@ -931,7 +923,16 @@ class PupilCameraViewer(QWidget):
         self.alignment_status_text.setReadOnly(True)
         right_column.addWidget(self.alignment_status_text)
 
-        right_column.addStretch()  # 添加弹性空间
+        # Sharpness label（可保持为较小控件）
+        self.sharpness_label = QLabel("Sharpness: --")
+        right_column.addWidget(self.sharpness_label)
+
+        # Focus info text（放大并优先占据空间）
+        self.focus_info_text = QTextEdit()
+        self.focus_info_text.setReadOnly(True)
+        self.focus_info_text.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.focus_info_text.setMinimumHeight(250)  # 根据需要调整默认高度
+        right_column.addWidget(self.focus_info_text, 2)  # 给予更高的伸缩因子
 
         # ========== 组合两列 ==========
         # 添加分隔线（可选）

@@ -424,7 +424,7 @@ class AutoFocusStateMachine(QObject):
 
     def _fine_focus(self, start_y: float) -> Tuple[Optional[float], Optional[float]]:
         """
-        精细对焦（基于二次曲线拟合）
+        精细对焦（基于正态曲线拟合）
         通过采集焦点附近的多个点，拟合出清晰度曲线，并直接计算出峰值位置。
         """
         self.message_updated.emit(f"开始精对焦，中心位置: {start_y:.2f}mm")
@@ -787,4 +787,78 @@ class AutoFocusStateMachine(QObject):
             self.message_updated.emit(f"精对焦完成。最终位置: {best_y:.3f}mm, 清晰度: {final_sharpness:.2f}")
 
         return best_y, final_sharpness
+
+    # 基于爬山法的精对焦方法
+    def _fine_focus_climb_hill(self, start_y: float) -> Tuple[Optional[float], Optional[float]]:
+        """
+        精细对焦（改进的爬山算法）
+        """
+        self.message_updated.emit(f"开始精对焦，初始位置: {start_y:.2f}mm")
+
+        current_y = start_y
+        step = self.config['fine_initial_step']
+        min_step = self.config['fine_min_step']
+        max_iterations = self.config['fine_max_iterations']
+
+        best_y = current_y
+        best_sharpness = 0
+        no_improvement_count = 0
+
+        k = 0
+
+        for iteration in range(max_iterations):
+            if self.cancel_requested:
+                return None, None
+
+            progress = 60 + int(40 * iteration / max_iterations)
+            self._update_progress(progress)
+
+            # 评估三个位置
+            positions = [current_y - step, current_y, current_y + step]
+            sharpness_values = []
+
+            for y_pos in positions:
+                self._move_y_absolute_mm(y_pos)
+                time.sleep(self.config['settle_time'])
+                if k == 0:
+                    time.sleep(1)
+                    k = 1
+
+                sharpness = self._measure_sharpness_averaged(require_pupil=True)
+                sharpness_values.append(sharpness if sharpness is not None else 0)
+
+            # 找最佳位置
+            max_idx = np.argmax(sharpness_values)
+            max_sharpness = sharpness_values[max_idx]
+
+            self.message_updated.emit(
+                f"迭代 {iteration + 1}: 步长={step:.3f}mm, "
+                f"清晰度=[{sharpness_values[0]:.2f}, {sharpness_values[1]:.2f}, {sharpness_values[2]:.2f}]"
+            )
+
+            # 更新最佳记录
+            if max_sharpness > best_sharpness * (1 + self.config['improvement_threshold']):
+                best_sharpness = max_sharpness
+                best_y = positions[max_idx]
+                no_improvement_count = 0
+            else:
+                no_improvement_count += 1
+
+            # 判断收敛
+            if max_idx == 1:  # 中心点最佳
+                step *= 0.5
+                if step < min_step:
+                    self.message_updated.emit("达到最小步长，对焦完成")
+                    break
+            else:
+                current_y = positions[max_idx]
+
+            # 早停条件
+            if no_improvement_count >= 3:
+                self.message_updated.emit("清晰度无明显改善，对焦完成")
+                break
+
+        # 移动到最佳位置
+        self._move_y_absolute_mm(best_y)
+        return best_y, best_sharpness
 
