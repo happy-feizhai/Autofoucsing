@@ -28,10 +28,6 @@ else:
     plugin_path = os.path.join(os.path.dirname(QtCore.__file__), "plugins", "platforms")
 os.environ['QT_QPA_PLATFORM_PLUGIN_PATH'] = plugin_path
 
-# TODO: 改进方向：
-# 1.改进瞳孔搜索的初始位置，如果上次对焦成功了，从上次对焦成功的位置开始
-# 2.改进精对焦过程，可以采用固定采样多个位置后拟合二次曲线的方式
-# 3.改进粗对焦过程，保留三个结果，如果三个结果呈现山峰状，直接退出
 
 # ============窗口滑动类===========
 # 在文件开头，QTimer, Qt 导入之后添加这个类：
@@ -232,7 +228,7 @@ class MotorController:
         """一个辅助方法，用于获取指定轴的控制器实例并处理错误。"""
         axis_controller = self.axes.get(axis_name.lower())
         if not axis_controller:
-            raise ValueError(f"无效的轴: '{axis_name}'. 可用轴: {list(self.axes.keys())}")
+            raise ValueError(f"Invalid axis: '{axis_name}'. Available axes: {list(self.axes.keys())}")
         return axis_controller
 
     # 3. 合并重复的方法
@@ -270,30 +266,62 @@ class MotorController:
 
 
 # ========== 瞳孔检测相关函数 ==========
+
 @njit
 def compute_image_sharpness_numba(img: np.ndarray) -> float:
-    """使用 Numba 加速计算图像清晰度"""
+    """使用 Numba 加速计算图像清晰度（修正为浮点计算以避免uint8溢出与整除误差）"""
     h, w = img.shape
-    F = 0
+    F = 0.0
 
     for x in range(1, w - 1, 2):
         for y in range(1, h - 1, 2):
+            # 转换为浮点避免溢出
+            c   = float(img[y, x])
+            r   = float(img[y, x + 1])
+            l   = float(img[y, x - 1])
+            d   = float(img[y + 1, x])
+            u   = float(img[y - 1, x])
+
             # 计算 Pave(x, y)
-            pave = (img[y, x] + img[y, x + 1] + img[y, x - 1] + img[y + 1, x] + img[y - 1, x]) / 5
+            # pave = (c + r + l + d + u) / 5.0
+            pave = median5(c, r, l, d, u)
+
 
             # 计算 G1st(x, y)
-            g1st = (abs(img[y, x + 1] - pave) + abs(img[y + 1, x] - pave) + abs(img[y + 1, x + 1] - pave)) ** 2
+            g1st = (abs(r - pave) + abs(d - pave) + abs(float(img[y + 1, x + 1]) - pave)) ** 2
 
             # 计算 G2nd(x, y)
-            g2nd = (abs(img[y, x + 2] - pave) + abs(img[y + 2, x] - pave) + abs(img[y + 2, x + 2] - pave)) ** 2
+            g2nd = (abs(float(img[y, x + 2]) - pave) +
+                    abs(float(img[y + 2, x]) - pave) +
+                    abs(float(img[y + 2, x + 2]) - pave)) ** 2
 
             # 计算清晰度 F
             F += g1st * g2nd
 
+    # 计算实际处理的像素数（近似值）
     count = ((w - 3) // 2) * ((h - 3) // 2)
 
-    return F * 0.1 / count
+    if count > 0:
+        F = F * 0.1 / float(count)
+    else:
+        F = 0.0
 
+    return F
+
+@njit
+def median5(a, b, c, d, e):
+    arr = np.array((a, b, c, d, e), dtype=np.float64)
+    # 选择排序，长度固定=5，开销很小
+    for i in range(4):
+        m = i
+        for j in range(i + 1, 5):
+            if arr[j] < arr[m]:
+                m = j
+        if m != i:
+            tmp = arr[i]
+            arr[i] = arr[m]
+            arr[m] = tmp
+    return arr[2]  # 中位数
 
 def preprocess_image(img: np.ndarray) -> np.ndarray:
     """图像预处理：增强对比度和降噪"""
@@ -377,8 +405,8 @@ def extract_lower_iris_roi(img, detected_circle):
     x, y, radius = detected_circle
     h, w = img.shape[:2]
 
-    print(f"瞳孔半径：{radius}像素")
-    print(f"瞳孔中心位置:（{x}, {y}）")
+    print(f"Pupil radius: {radius} pixels")
+    print(f"Pupil center position: ({x}, {y})")
 
     # 虹膜区域通常是瞳孔半径的2-3倍
     # 我们提取瞳孔下方的一个矩形虹膜区域
@@ -397,7 +425,7 @@ def extract_lower_iris_roi(img, detected_circle):
 
     # 确保ROI有效
     if y2 <= y1 or x2 <= x1:
-        print("警告：ROI无效，使用备用方案")
+        print("Warning: ROI invalid, using backup plan")
         # 备用方案：使用瞳孔下方的固定大小区域
         y1 = max(0, int(y + radius))
         y2 = min(h, y1 + 100)  # 固定高度100像素
@@ -514,7 +542,7 @@ def detect_pupil_contour(img: np.ndarray) -> Optional[Tuple[int, int, int]]:
     # print(f"预处理执行时间: {(end - start) * 1000:.2f} ms")
 
 
-    r_threshold = 150
+    r_threshold = 130
 
     # 多种阈值方法
     thresholds = []
@@ -623,7 +651,7 @@ class DetectionResult:
 class PupilCameraViewer(QWidget):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("瞳孔识别相机系统 - Pupil Detection Camera System")
+        self.setWindowTitle("Pupil Autofocus System")
         self.setGeometry(100, 100, 1200, 800)
 
         # 相机相关变量
@@ -984,9 +1012,9 @@ class PupilCameraViewer(QWidget):
             self.pid_y.Ki = float(self.pid_y_ki.text())
             self.pid_y.Kd = float(self.pid_y_kd.text())
 
-            self.sharpness_text.setText("PID参数已更新")
+            self.sharpness_text.setText("PID parameters updated")
         except ValueError:
-            QMessageBox.warning(self, "警告", "请输入有效的PID参数")
+            QMessageBox.warning(self, "Warning", "Please enter valid PID parameters")
 
     def ymotor_move(self):
         if self.motor_controller:
@@ -996,7 +1024,7 @@ class PupilCameraViewer(QWidget):
     def set_camera_parameters(self):
         """设置相机参数"""
         if self.camera is None:
-            QMessageBox.warning(self, "警告", "请先打开相机")
+            QMessageBox.warning(self, "Warning", "Please open camera first")
             return
 
         try:
@@ -1016,10 +1044,10 @@ class PupilCameraViewer(QWidget):
                 gain_value = float(self.gain_edit.text())
                 self.camera.Gain.SetValue(gain_value)
 
-            self.sharpness_text.setText("参数设置成功")
+            self.sharpness_text.setText("Parameters set successfully")
 
         except Exception as e:
-            QMessageBox.critical(self, "错误", f"设置参数失败: {str(e)}")
+            QMessageBox.critical(self, "Error", f"Failed to set parameters: {str(e)}")
     def start_camera(self):
         """打开相机 - 修改版"""
         try:
@@ -1034,12 +1062,12 @@ class PupilCameraViewer(QWidget):
             # 启动定时器更新画面
             self.timer.start(20)  # 20ms更新一次（50 FPS）
 
-            self.sharpness_text.setText("相机已打开")
+            self.sharpness_text.setText("Camera opened")
             self.open_button.setEnabled(False)
             self.close_button.setEnabled(True)
 
         except Exception as e:
-            QMessageBox.critical(self, "错误", f"无法打开相机: {str(e)}")
+            QMessageBox.critical(self, "Error", f"Cannot open camera: {str(e)}")
 
     def close_camera(self):
         """关闭相机 - 修改版"""
@@ -1060,14 +1088,14 @@ class PupilCameraViewer(QWidget):
             self.motor_threads.clear()
 
             # 重置UI状态
-            self.sharpness_text.setText("相机已关闭")
+            self.sharpness_text.setText("Camera closed")
             self.open_button.setEnabled(True)
             self.close_button.setEnabled(False)
             self.pupil_detection_mode = False
             self.pupil_alignment_mode = False
-            self.pupil_detect_button.setText("开始瞳孔检测")
+            self.pupil_detect_button.setText("Start Pupil Detection")
             self.pupil_detect_button.setStyleSheet("QPushButton { background-color: #4CAF50; color: white; }")
-            self.pupil_align_button.setText("开始瞳孔对齐")
+            self.pupil_align_button.setText("Start Pupil Alignment")
             self.pupil_align_button.setStyleSheet("QPushButton { background-color: #2196F3; color: white; }")
             self.pupil_align_button.setEnabled(False)
 
@@ -1088,7 +1116,7 @@ class PupilCameraViewer(QWidget):
     def toggle_pupil_detection(self):
         """切换瞳孔检测模式 - 修改版"""
         if self.camera is None:
-            QMessageBox.warning(self, "警告", "请先打开相机")
+            QMessageBox.warning(self, "Warning", "Please open camera first")
             return
 
         self.pupil_detection_mode = not self.pupil_detection_mode
@@ -1097,17 +1125,17 @@ class PupilCameraViewer(QWidget):
             # 启动检测线程
             self.start_detection_thread()
 
-            self.pupil_detect_button.setText("停止瞳孔检测")
+            self.pupil_detect_button.setText("Stop Pupil Detection")
             self.pupil_detect_button.setStyleSheet("QPushButton { background-color: #f44336; color: white; }")
-            self.sharpness_text.setText("瞳孔检测模式已开启（非阻塞）")
+            self.sharpness_text.setText("Pupil detection mode enabled (non-blocking)")
             self.pupil_align_button.setEnabled(True)
         else:
             # 停止检测线程
             self.stop_detection_thread()
 
-            self.pupil_detect_button.setText("开始瞳孔检测")
+            self.pupil_detect_button.setText("Start Pupil Detection")
             self.pupil_detect_button.setStyleSheet("QPushButton { background-color: #4CAF50; color: white; }")
-            self.sharpness_text.setText("瞳孔检测模式已关闭")
+            self.sharpness_text.setText("Pupil detection mode disabled")
             self.pupil_info_text.clear()
             self.pupil_align_button.setEnabled(False)
 
@@ -1173,7 +1201,7 @@ class PupilCameraViewer(QWidget):
                 # 没有新图像，继续等待
                 pass
             except Exception as e:
-                print(f"检测线程错误: {e}")
+                print(f"Detection thread error: {e}")
                 with self.detection_lock:
                     self.is_detecting = False
                 time.sleep(0.1)
@@ -1181,7 +1209,7 @@ class PupilCameraViewer(QWidget):
     def toggle_pupil_alignment(self):
         """切换瞳孔对齐模式"""
         if not self.pupil_detection_mode:
-            QMessageBox.warning(self, "警告", "请先开启瞳孔检测模式")
+            QMessageBox.warning(self, "Warning", "Please enable pupil detection mode first")
             return
 
         self.pupil_alignment_mode = not self.pupil_alignment_mode
@@ -1193,13 +1221,13 @@ class PupilCameraViewer(QWidget):
             self.x_aligned = False
             self.y_aligned = False
 
-            self.pupil_align_button.setText("停止瞳孔对齐")
+            self.pupil_align_button.setText("Stop Pupil Alignment")
             self.pupil_align_button.setStyleSheet("QPushButton { background-color: #ff9800; color: white; }")
-            self.alignment_status_text.setText("瞳孔对齐模式已开启")
+            self.alignment_status_text.setText("Pupil alignment mode enabled")
         else:
-            self.pupil_align_button.setText("开始瞳孔对齐")
+            self.pupil_align_button.setText("Start Pupil Alignment")
             self.pupil_align_button.setStyleSheet("QPushButton { background-color: #2196F3; color: white; }")
-            self.alignment_status_text.setText("瞳孔对齐模式已关闭")
+            self.alignment_status_text.setText("Pupil alignment mode disabled")
 
     def perform_alignment_nonblocking(self, pupil_x, pupil_z):
         """非阻塞的瞳孔对齐控制"""
@@ -1216,13 +1244,13 @@ class PupilCameraViewer(QWidget):
 
             if self.x_aligned and self.y_aligned:
                 self.alignment_status_text.setText(
-                    f"对齐成功！\n"
-                    f"X偏差: {error_x:.1f} 像素\n"
-                    f"Y偏差: {error_z:.1f} 像素\n"
-                    f"状态: 已对准"
+                    f"Alignment successful!\n"
+                    f"X error: {error_x:.1f} pixels\n"
+                    f"Y error: {error_z:.1f} pixels\n"
+                    f"Status: Aligned"
                 )
                 self.pupil_alignment_mode = not self.pupil_alignment_mode
-                self.pupil_align_button.setText("开始瞳孔对齐")
+                self.pupil_align_button.setText("Start Pupil Alignment")
                 self.pupil_align_button.setStyleSheet("QPushButton { background-color: #2196F3; color: white; }")
                 self.motor_controller.stop_all()
                 return
@@ -1234,7 +1262,7 @@ class PupilCameraViewer(QWidget):
             self.motor_controller.move_to_relative("z", -move_z_steps)
 
             self.pupil_alignment_mode = not self.pupil_alignment_mode
-            self.pupil_align_button.setText("开始瞳孔对齐")
+            self.pupil_align_button.setText("Start Pupil Alignment")
             self.pupil_align_button.setStyleSheet("QPushButton { background-color: #2196F3; color: white; }")
 
             # ==================基于PID的调整====================
@@ -1279,17 +1307,17 @@ class PupilCameraViewer(QWidget):
 
             # 更新状态显示
 
-            x_status = "已对准" if self.x_aligned else "调整中"
-            y_status = "已对准" if self.y_aligned else "调整中"
+            x_status = "Aligned" if self.x_aligned else "Adjusting"
+            y_status = "Aligned" if self.y_aligned else "Adjusting"
 
             self.alignment_status_text.setText(
-                f"正在对齐...\n"
-                f"X偏差: {error_x:.1f} 像素 - {x_status}\n"
-                f"Y偏差: {error_z:.1f} 像素 - {y_status}\n"
-                f"活动线程数: {len([t for t in self.motor_threads if t.is_alive()])}"
+                f"Aligning...\n"
+                f"X error: {error_x:.1f} pixels - {x_status}\n"
+                f"Y error: {error_z:.1f} pixels - {y_status}\n"
+                f"Active threads: {len([t for t in self.motor_threads if t.is_alive()])}"
             )
         except Exception as e:
-            self.alignment_status_text.setText(f"对齐控制错误: {e}")
+            self.alignment_status_text.setText(f"Alignment control error: {e}")
 
     def start_mouse_control(self, target_x, target_y):
         """开始鼠标控制 - 发送一次移动指令"""
@@ -1326,16 +1354,16 @@ class PupilCameraViewer(QWidget):
         try:
             if speed_x != 0:
                 self.motor_controller.go_speed("x", int(-speed_x))
-                print(f"X轴移动速度: {int(-speed_x)}")
+                print(f"X-axis movement speed: {int(-speed_x)}")
 
             if speed_z != 0:
                 self.motor_controller.go_speed("z", int(speed_z))
-                print(f"Z轴移动速度: {int(speed_z)}")
+                print(f"Z-axis movement speed: {int(speed_z)}")
 
-            print(f"鼠标控制开始 - 目标位置: ({target_x:.1f}, {target_y:.1f})")
+            print(f"Mouse control started - target position: ({target_x:.1f}, {target_y:.1f})")
 
         except Exception as e:
-            print(f"鼠标控制启动错误: {e}")
+            print(f"Mouse control startup error: {e}")
 
     def stop_mouse_control(self):
         """停止鼠标控制 - 发送停止指令"""
@@ -1343,9 +1371,9 @@ class PupilCameraViewer(QWidget):
             try:
                 self.motor_controller.stop("x")
                 self.motor_controller.stop("z")
-                print("鼠标控制停止")
+                print("Mouse control stopped")
             except Exception as e:
-                print(f"停止电机错误: {e}")
+                print(f"Motor stop error: {e}")
 
     def update_frame(self):
         """更新相机画面 - 主线程负责获取所有图像"""
@@ -1388,7 +1416,7 @@ class PupilCameraViewer(QWidget):
                 grab_result.Release()
 
         except Exception as e:
-            print(f"更新画面错误: {e}")
+            print(f"Frame update error: {e}")
 
     def process_detection_result(self, result: DetectionResult):
         """处理检测结果"""
@@ -1402,10 +1430,10 @@ class PupilCameraViewer(QWidget):
 
             # 更新信息
             self.pupil_info_text.setText(
-                f"瞳孔中心: ({x}, {y})\n"
-                f"瞳孔半径: {radius} 像素\n"
-                f"目标位置: {self.target_pupil_position}\n"
-                f"检测状态: 成功"
+                f"Pupil center: ({x}, {y})\n"
+                f"Pupil radius: {radius} pixels\n"
+                f"Target position: {self.target_pupil_position}\n"
+                f"Detection status: Success"
             )
 
             # 如果开启了对齐模式，执行非阻塞对齐
@@ -1419,10 +1447,10 @@ class PupilCameraViewer(QWidget):
         else:
             self.current_pupil_position = None
             self.display_normal_image(result.image)
-            self.pupil_info_text.setText("检测状态: 失败\n请调整相机参数或位置")
+            self.pupil_info_text.setText("Detection status: Failed\nPlease adjust camera parameters or position")
 
             if self.pupil_alignment_mode:
-                self.alignment_status_text.setText("未检测到瞳孔，无法进行对齐")
+                self.alignment_status_text.setText("No pupil detected, cannot perform alignment")
 
     def display_current_state(self, img):
         """显示当前状态（检测进行中）"""
@@ -1437,7 +1465,7 @@ class PupilCameraViewer(QWidget):
         # 显示检测状态
         with self.detection_lock:
             if self.is_detecting:
-                self.sharpness_text.append("检测中...")
+                self.sharpness_text.append("Detecting...")
 
     def draw_pupil_markers(self, img, x, y, radius):
         """绘制瞳孔标记"""
@@ -1467,9 +1495,9 @@ class PupilCameraViewer(QWidget):
                 if self.detection_times:
                     avg_time = sum(self.detection_times) / len(self.detection_times)
                     self.sharpness_text.setText(
-                        f"平均检测时间: {avg_time:.1f} ms\n"
-                        f"最近检测时间: {self.last_detection_time:.1f} ms\n"
-                        f"队列大小: {self.detection_queue.qsize()}"
+                        f"Average detection time: {avg_time:.1f} ms\n"
+                        f"Recent detection time: {self.last_detection_time:.1f} ms\n"
+                        f"Queue size: {self.detection_queue.qsize()}"
                     )
 
     def initialize_auto_focus(self):
@@ -1501,7 +1529,6 @@ class PupilCameraViewer(QWidget):
         if self.auto_focus_machine:
             self.auto_focus_machine.set_config(
                 pupil_search_range=self.search_range_spin.value(),
-                fine_min_step=self.precision_spin.value()
             )
 
     def get_current_image(self):
@@ -1549,7 +1576,7 @@ class PupilCameraViewer(QWidget):
     def toggle_auto_focus(self):
         """切换自动对焦模式"""
         if not self.camera:
-            QMessageBox.warning(self, "警告", "请先连接相机")
+            QMessageBox.warning(self, "Warning", "Please connect camera first")
             return
 
         if self.auto_focus_machine is None:
@@ -1568,16 +1595,16 @@ class PupilCameraViewer(QWidget):
             self.update_focus_config()
 
             # 启动自动对焦
-            self.auto_focus_button.setText("停止自动对焦")
+            self.auto_focus_button.setText("Stop Auto Focus")
             self.auto_focus_button.setStyleSheet("QPushButton { background-color: #f44336; color: white; }")
             self.focus_info_text.clear()
-            self.focus_info_text.append("启动自动对焦...")
+            self.focus_info_text.append("Starting auto focus...")
 
             # 开始对焦
             self.auto_focus_machine.start_auto_focus()
         else:
             # 停止自动对焦
-            self.auto_focus_button.setText("开始自动对焦")
+            self.auto_focus_button.setText("Start Auto Focus")
             self.auto_focus_button.setStyleSheet("QPushButton { background-color: #4CAF50; color: white; }")
 
             if self.auto_focus_machine.is_running:
@@ -1585,17 +1612,16 @@ class PupilCameraViewer(QWidget):
 
     def on_focus_state_changed(self, state_str):
         """对焦状态变化处理"""
-        self.focus_state_label.setText(f"对焦状态: {state_str}")
+        self.focus_state_label.setText(f"Focus Status: {state_str}")
 
         # 根据状态改变标签颜色
         color_map = {
-            "空闲": "#f0f0f0",
-            "搜索瞳孔": "#ffeb3b",
-            "粗对焦": "#ff9800",
-            "精对焦": "#03a9f4",
-            "对焦完成": "#4caf50",
-            "对焦失败": "#f44336",
-            "对焦取消": "#9e9e9e"
+            "idle": "#f0f0f0",
+            "finding_pupil": "#ffeb3b",
+            "fine_focusing": "#03a9f4",
+            "focused": "#4caf50",
+            "failed": "#f44336",
+            "cancelled": "#9e9e9e"
         }
 
         color = color_map.get(state_str, "#f0f0f0")
@@ -1630,26 +1656,26 @@ class PupilCameraViewer(QWidget):
                 pass
         except Exception as e:
             # 防御性处理，避免回调异常影响UI
-            print(f"on_focus_completed 处理出错: {e}")
+            print(f"on_focus_completed processing error: {e}")
 
         self.auto_focus_button.setText("开始自动对焦")
         self.auto_focus_button.setStyleSheet("QPushButton { background-color: #4CAF50; color: white; }")
 
         if result.success:
             self.focus_info_text.append(f"\n{'=' * 40}")
-            self.focus_info_text.append(f"对焦成功！")
-            self.focus_info_text.append(f"最终位置: {result.final_position:.3f} mm")
-            self.focus_info_text.append(f"清晰度值: {result.final_sharpness:.2f}")
-            self.focus_info_text.append(f"耗时: {result.total_time:.2f} 秒")
+            self.focus_info_text.append(f"Focus successful!")
+            self.focus_info_text.append(f"Final position: {result.final_position:.3f} mm")
+            self.focus_info_text.append(f"Sharpness value: {result.final_sharpness:.2f}")
+            self.focus_info_text.append(f"Time elapsed: {result.total_time:.2f} seconds")
             self.focus_info_text.append(f"{'=' * 40}\n")
 
             # 更新清晰度显示
-            self.sharpness_label.setText(f"清晰度: {result.final_sharpness:.2f}")
+            self.sharpness_label.setText(f"Sharpness: {result.final_sharpness:.2f}")
 
-            QMessageBox.information(self, "对焦完成", result.message)
+            QMessageBox.information(self, "Focus Completed", result.message)
         else:
-            self.focus_info_text.append(f"\n对焦失败: {result.message}\n")
-            QMessageBox.warning(self, "对焦失败", result.message)
+            self.focus_info_text.append(f"\nFocus failed: {result.message}\n")
+            QMessageBox.warning(self, "Focus Failed", result.message)
 
     def closeEvent(self, event):
         """窗口关闭事件"""
