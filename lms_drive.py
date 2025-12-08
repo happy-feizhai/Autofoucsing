@@ -564,7 +564,7 @@ class LMS_Driver(object):
         relative=False,
         immediate=True,
         wait=False,
-        poll_interval=0.01,
+        poll_interval=0.03,
     ):
         """
         轮廓位置模式（PP）运动命令，参考 5.3 章节：

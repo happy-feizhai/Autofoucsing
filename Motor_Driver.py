@@ -242,6 +242,9 @@ class LMS_LinearMovement(object):
         """
         return self._drv.getActualPosition()
 
+    def isRunning(self):
+        return not self._drv.isRunning()
+
     def stop(self):
         """
         快速停机
@@ -304,6 +307,8 @@ class Stage_LinearMovement(object):
 
     def stop(self, *args, **kwargs):
         return self._impl.stop(*args, **kwargs)
+    def isRunning(self):
+        return self._impl.isRunning()
 
 
 # ======================= 旋转轴保持不变 =======================

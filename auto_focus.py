@@ -94,7 +94,7 @@ class AutoFocusStateMachine(QObject):
             'fine_max_iterations': 20,
 
             # 稳定性参数
-            'settle_time': 0.07,  # 电机稳定时间(秒)
+            'settle_time': 0.05,  # 电机稳定时间(秒)
             'average_frames': 1,  # 清晰度计算平均帧数
             'pupil_detect_threshold': 0.6,  # 瞳孔检测成功率阈值
 
@@ -174,7 +174,11 @@ class AutoFocusStateMachine(QObject):
         """
         执行完整的对焦序列
         """
+
+        self.motor._get_axis("y").reset()
+
         start_time = time.time()
+
 
 
         try:
@@ -183,7 +187,6 @@ class AutoFocusStateMachine(QObject):
                 if self.last_best_position is not None:
                     current_y = self.last_best_position
                     pupil_position = current_y
-                    position = pupil_position
                 else:
                     current_y = self._get_y_mm()
                     pupil_position = current_y
@@ -203,14 +206,15 @@ class AutoFocusStateMachine(QObject):
                 self._update_progress(10)
 
                 pupil_position = self._find_pupil_position(current_y)
-                position = pupil_position
 
-            self._move_y_absolute_mm(pupil_position - 6)
+            self._move_y_relative_mm(-6, wait=True)
             # while self.motor._get_axis("y").isRunning():
             #     time.sleep(0.01)
-            time.sleep(0.2)
+
             if self._check_pupil_detection():
                 pupil_position = pupil_position - 6
+            else:
+                pupil_position = pupil_position - 3
 
             if self.cancel_requested:
                 self._handle_cancel()
@@ -227,9 +231,8 @@ class AutoFocusStateMachine(QObject):
             self._change_state(FocusState.FINE_FOCUSING)
             self._update_progress(50)
 
-            # final_y, final_sharpness = self._fine_focus(pupil_position)
-            final_y, final_sharpness = self._fine_focus_climb_hill(pupil_position)
-            self._move_y_absolute_mm(final_y)
+            final_y, final_sharpness = self._fine_focus(pupil_position)
+            # final_y, final_sharpness = self._fine_focus_climb_hill(pupil_position)
 
             if self.cancel_requested:
                 self._handle_cancel()
@@ -283,11 +286,9 @@ class AutoFocusStateMachine(QObject):
 
             # 直接绝对移动到目标 mm 位置
             self._move_y_absolute_mm(y_pos)
-            time.sleep(self.config['settle_time'])
             if i == 0:
-                # while self.motor._get_axis("y").isRunning():
-                #     time.sleep(0.1)
-                time.sleep(0.2)
+                while self.motor._get_axis("y").isRunning():
+                    time.sleep(0.05)
             if self._check_pupil_detection():
                 self.last_best_position = y_pos
                 # 找到瞳孔后立即返回当前位置
@@ -326,12 +327,12 @@ class AutoFocusStateMachine(QObject):
             self._update_progress(progress)
 
             # 移动电机并测量清晰度
-            self._move_y_absolute_mm(y_pos)
+            self._move_y_absolute_mm(y_pos, wait=False)
             time.sleep(self.config['settle_time'])
             if i == 0:
-                # while self.motor._get_axis("y").isRunning():
-                    #ime.sleep(0.01)
-                time.sleep(0.2)
+                while self.motor._get_axis("y").isRunning():
+                    time.sleep(0.05)
+
 
 
             sharpness = self._measure_sharpness_averaged(require_pupil=True)
@@ -354,8 +355,8 @@ class AutoFocusStateMachine(QObject):
             best_y = best_sampled_point['position']
             best_sharpness = best_sampled_point['sharpness']
             self.message_updated.emit(f"Fallback strategy: Moving to best sample point {best_y:.3f}mm")
-            self._move_y_absolute_mm(best_y)
-            time.sleep(self.config['settle_time'])
+            self._move_y_absolute_mm(best_y, wait=True)
+            # time.sleep(self.config['settle_time'])
             # while self.motor._get_axis("y").isRunning():
             #     time.sleep(0.01)
             return best_y, best_sharpness
@@ -424,12 +425,12 @@ class AutoFocusStateMachine(QObject):
 
         # 4. 移动到最终计算出的最佳位置并获取最终清晰度
         self._update_progress(95)
-        self._move_y_absolute_mm(best_y)
+        self._move_y_absolute_mm(best_y, wait=True)
         # 最终移动后可以稍微多等待一会，确保电机完全稳定
         # while self.motor._get_axis("y").isRunning():
         #     time.sleep(0.01)
-        time.sleep(0.2)
         final_sharpness = self._measure_sharpness_averaged(require_pupil=True)
+        # self.motor._get_axis("y").stop()
 
         # 如果在最终位置未能测得清晰度（例如，由于微小误差导致瞳孔丢失），
         # 则使用拟合曲线的理论峰值或采样的最大值作为最终清晰度
@@ -633,10 +634,10 @@ class AutoFocusStateMachine(QObject):
                 break
 
         # 移动到最佳位置
-        self._move_y_absolute_mm(best_y)
+        self._move_y_absolute_mm(best_y, wait=True)
         # while self.motor._get_axis("y").isRunning():
         #     time.sleep(0.05)
-        time.sleep(0.2)
+
         best_sharpness = self._measure_sharpness_averaged(require_pupil=True)
         return best_y, best_sharpness
 

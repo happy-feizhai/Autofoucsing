@@ -184,8 +184,8 @@ class MotorController:
             'high_speed': 500000,
             'low_speed': 500000,
             'path_speed': 500000,  # 假设与X轴相同，如果不同请修改
-            'path_accel': 4294967295,
-            'path_decel': 4294967295,
+            'path_accel': 4294967295 * 0.9,
+            'path_decel': 4294967295 * 0.9,
         },
         'z': {
             'driver': DM2C.Driver_03,
@@ -542,7 +542,7 @@ def detect_pupil_contour(img: np.ndarray) -> Optional[Tuple[int, int, int]]:
     # print(f"预处理执行时间: {(end - start) * 1000:.2f} ms")
 
 
-    r_threshold = 100
+    r_threshold = 150
 
     # 多种阈值方法
     thresholds = []
