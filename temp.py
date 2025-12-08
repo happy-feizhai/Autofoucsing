@@ -181,11 +181,11 @@ class MotorController:
         },
         'y': {
             'driver': DM2C.Driver_02,
-            'high_speed': 500,
-            'low_speed': 100,
-            'path_speed': 1100,  # 假设与X轴相同，如果不同请修改
-            'path_accel': 50,
-            'path_decel': 50,
+            'high_speed': 500000,
+            'low_speed': 500000,
+            'path_speed': 500000,  # 假设与X轴相同，如果不同请修改
+            'path_accel': 4294967295,
+            'path_decel': 4294967295,
         },
         'z': {
             'driver': DM2C.Driver_03,
@@ -236,15 +236,15 @@ class MotorController:
         """获取指定轴电机的当前位置（单位：steps）。"""
         return self._get_axis(axis_name).Position()
 
-    def move_to_absolute(self, axis_name: str, position: float):
+    def move_to_absolute(self, axis_name: str, position: float, wait: bool = False ):
         """移动指定轴电机到绝对位置（单位：steps）。"""
         print(f"Moving {axis_name.upper()} motor to absolute position: {position:.3f} steps")
-        self._get_axis(axis_name).goAbsolutePosition(position)
+        self._get_axis(axis_name).goAbsolutePosition(position, wait)
 
-    def move_to_relative(self, axis_name: str, distance: float):
+    def move_to_relative(self, axis_name: str, distance: float, wait: bool = False):
         """相对移动指定轴电机一定距离（单位：steps）。"""
         print(f"Moving {axis_name.upper()} motor by relative distance: {distance:.3f} steps")
-        self._get_axis(axis_name).goRelativePosition(distance)
+        self._get_axis(axis_name).goRelativePosition(distance, wait)
 
     def go_speed(self, axis_name: str, speed: float):
         """驱动指定轴电机按指定速度移动。"""
@@ -542,7 +542,7 @@ def detect_pupil_contour(img: np.ndarray) -> Optional[Tuple[int, int, int]]:
     # print(f"预处理执行时间: {(end - start) * 1000:.2f} ms")
 
 
-    r_threshold = 130
+    r_threshold = 100
 
     # 多种阈值方法
     thresholds = []
@@ -1658,7 +1658,7 @@ class PupilCameraViewer(QWidget):
             # 防御性处理，避免回调异常影响UI
             print(f"on_focus_completed processing error: {e}")
 
-        self.auto_focus_button.setText("开始自动对焦")
+        self.auto_focus_button.setText("Start Auto Focus")
         self.auto_focus_button.setStyleSheet("QPushButton { background-color: #4CAF50; color: white; }")
 
         if result.success:
