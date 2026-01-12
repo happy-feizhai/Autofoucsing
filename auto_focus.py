@@ -101,6 +101,12 @@ class AutoFocusStateMachine(QObject):
             # 清晰度参数
             'sharpness_noise_level': 0.05,  # 清晰度噪声水平
             'improvement_threshold': 0,  # 改善阈值
+
+
+           'fine_focus_scan_range': 12.0,  # 连续扫描总范围 (mm)
+            'fine_focus_sample_period': 0.05, # 采样周期 (s)，比如 50ms
+            'fine_focus_settle_time': 0.02  # 起始/停止时的静置时间 (s)
+
         }
 
         # 对焦历史记录
@@ -175,7 +181,11 @@ class AutoFocusStateMachine(QObject):
         执行完整的对焦序列
         """
 
-        self.motor._get_axis("y").reset()
+
+        self.motor._get_axis("y")._impl._drv.initPPMode()
+        if self.motor._get_axis("y")._impl._drv.isFault():
+            self.motor._get_axis("y")._impl._drv.faultReset()
+        self.motor._get_axis("y")._impl._drv.enableOperation()
 
         start_time = time.time()
 
@@ -231,8 +241,9 @@ class AutoFocusStateMachine(QObject):
             self._change_state(FocusState.FINE_FOCUSING)
             self._update_progress(50)
 
-            final_y, final_sharpness = self._fine_focus(pupil_position)
+            # final_y, final_sharpness = self._fine_focus(pupil_position)
             # final_y, final_sharpness = self._fine_focus_climb_hill(pupil_position)
+            final_y, final_sharpness = self._fine_focus_continuous_pp(pupil_position)
 
             if self.cancel_requested:
                 self._handle_cancel()
@@ -443,6 +454,181 @@ class AutoFocusStateMachine(QObject):
                 final_sharpness = max(y_data)
 
         self.message_updated.emit(f"Fine focus completed. Final position: {best_y:.3f}mm, Sharpness: {final_sharpness:.2f}")
+
+        return best_y, final_sharpness
+
+    def _fine_focus_continuous_pp(self, start_y: float) -> Tuple[Optional[float], Optional[float]]:
+        """
+        精细对焦（连续扫描版，位置模式 + 高斯拟合）：
+        从 start_y 开始往正方向连续走一段距离（默认 12mm），
+        在运动过程中不断采样 (y, sharpness)，
+        扫描结束后对采样点做高斯拟合，取拟合峰值位置为最佳焦点。
+        """
+        self.message_updated.emit(
+            f"[Continuous-PP] Starting fine focus from {start_y:.3f}mm"
+        )
+
+        scan_range = float(self.config.get('fine_focus_scan_range', 12.0))  # 总扫描范围 mm
+        sample_period = float(self.config.get('fine_focus_sample_period', 0.05))  # 采样周期 s
+        settle_time = float(self.config.get('fine_focus_settle_time', 0.02))  # 起止静置时间 s
+
+        if scan_range <= 0:
+            self.message_updated.emit("[Continuous-PP] scan_range must be > 0")
+            return None, None
+
+        # 扫描区间：start_y -> start_y + scan_range
+        y_start = start_y
+        y_end = start_y + scan_range
+
+        # 1️⃣ 先把电机准确移动到 y_start，并静置一小会
+        self._move_y_absolute_mm(y_start, wait=True)
+        time.sleep(settle_time)
+
+        axis_y = self.motor._get_axis("y")
+
+        # 2️⃣ 发一条“移动到 y_end”的绝对位置指令（非阻塞），让电机连续走
+        self._move_y_absolute_mm(y_end, wait=False)
+        self.message_updated.emit(
+            f"[Continuous-PP] Scanning from {y_start:.3f}mm to {y_end:.3f}mm..."
+        )
+
+        sampled_data: list[dict] = []
+        last_sample_t = time.time()
+
+        try:
+            while axis_y.isRunning():
+                if self.cancel_requested:
+                    self.message_updated.emit("[Continuous-PP] Cancel requested, stopping.")
+                    axis_y.stop()
+                    return None, None
+
+                now = time.time()
+                # 控制采样频率
+                if now - last_sample_t < sample_period:
+                    time.sleep(0.001)
+                    continue
+                last_sample_t = now
+
+                # 读当前 Y 位置（mm）
+                current_y = self._get_y_mm()
+
+                # 防守式保护：如果明显超过 y_end，就退出
+                if current_y > y_end + 0.5:
+                    self.message_updated.emit(
+                        f"[Continuous-PP] current_y {current_y:.3f}mm > y_end {y_end:.3f}mm, stop sampling."
+                    )
+                    break
+
+                # 更新进度（精对焦阶段 60%~90%）
+                progress_ratio = (current_y - y_start) / max(1e-6, (y_end - y_start))
+                progress = 60 + int(30 * max(0.0, min(1.0, progress_ratio)))
+                self._update_progress(progress)
+
+                # 拍照 + 算清晰度
+                sharpness = self._measure_sharpness_averaged(require_pupil=True)
+                if sharpness is not None and sharpness > 0:
+                    sampled_data.append({
+                        'position': current_y,
+                        'sharpness': float(sharpness),
+                    })
+                    self.message_updated.emit(
+                        f"[Continuous-PP] Sample: y={current_y:.3f}mm, Sharpness={sharpness:.2f}"
+                    )
+
+                time.sleep(0.001)  # 避免 CPU 忙等
+
+        finally:
+            # 确保最后电机停下来
+            # axis_y.stop()
+            time.sleep(settle_time)
+
+        # 3️⃣ 扫描完成后，分析采样数据 + 高斯拟合
+        if not sampled_data:
+            self.message_updated.emit("[Continuous-PP] No valid samples, fine focus failed.")
+            return None, None
+
+        # 至少要有 3 个点才能拟合
+        if len(sampled_data) < 3:
+            self.message_updated.emit(
+                f"[Continuous-PP] Only {len(sampled_data)} valid samples, fallback to max-sharpness point."
+            )
+            best_sample = max(sampled_data, key=lambda d: d['sharpness'])
+            best_y = best_sample['position']
+            best_sharpness = best_sample['sharpness']
+        else:
+            # 高斯模型
+            def gaussian(x, A, mu, sigma):
+                return A * np.exp(-(x - mu) ** 2 / (2 * sigma ** 2))
+
+            x_data = np.array([d['position'] for d in sampled_data], dtype=float)
+            y_data = np.array([d['sharpness'] for d in sampled_data], dtype=float)
+
+            A0 = float(np.max(y_data))
+            mu0 = float(x_data[np.argmax(y_data)])
+            sigma0 = float(np.std(x_data))
+            if sigma0 <= 0:
+                sigma0 = float((np.max(x_data) - np.min(x_data)) / 4.0) or 1.0
+
+            popt = None
+            best_y = None
+            best_sharpness = None
+
+            try:
+                popt, pcov = curve_fit(gaussian, x_data, y_data, p0=[A0, mu0, sigma0])
+                A_fit, mu_fit, sigma_fit = popt
+                min_pos, max_pos = float(np.min(x_data)), float(np.max(x_data))
+
+                reasons = []
+                if A_fit <= 0:
+                    reasons.append("A <= 0")
+                if sigma_fit <= 0:
+                    reasons.append("sigma <= 0")
+                if not (min_pos <= mu_fit <= max_pos):
+                    reasons.append("mu outside sampling range")
+
+                if not reasons:
+                    # 拟合结果看起来合理
+                    best_y = float(mu_fit)
+                    best_sharpness = float(gaussian(best_y, *popt))
+                    self.message_updated.emit(
+                        f"[Continuous-PP] Gaussian fit OK: A={A_fit:.2f}, mu={best_y:.3f}, sigma={sigma_fit:.3f}"
+                    )
+                else:
+                    # 拟合结果不靠谱，退回到最大样本点
+                    self.message_updated.emit(
+                        f"[Continuous-PP] Gaussian fit unreliable: {', '.join(reasons)}, "
+                        "fallback to max-sharpness sample."
+                    )
+                    best_sample = max(sampled_data, key=lambda d: d['sharpness'])
+                    best_y = best_sample['position']
+                    best_sharpness = best_sample['sharpness']
+
+            except Exception as e:
+                # 拟合失败，退回最大样本点
+                self.message_updated.emit(
+                    f"[Continuous-PP] Gaussian fitting failed: {e}, fallback to max-sharpness sample."
+                )
+                best_sample = max(sampled_data, key=lambda d: d['sharpness'])
+                best_y = best_sample['position']
+                best_sharpness = best_sample['sharpness']
+
+        self.message_updated.emit(
+            f"[Continuous-PP] Best position (after fitting/fallback): {best_y:.3f}mm, "
+            f"Sharpness≈{best_sharpness:.2f}"
+        )
+
+        # 4️⃣ 再移动回最佳位置，测一次最终清晰度
+        self._update_progress(95)
+        self._move_y_absolute_mm(best_y, wait=True)
+        time.sleep(settle_time)
+        final_sharpness = self._measure_sharpness_averaged(require_pupil=True)
+        if final_sharpness is None:
+            final_sharpness = best_sharpness
+
+        self.message_updated.emit(
+            f"[Continuous-PP] Fine focus done. Final position: {best_y:.3f}mm, "
+            f"Sharpness: {final_sharpness:.2f}"
+        )
 
         return best_y, final_sharpness
 

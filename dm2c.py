@@ -543,8 +543,11 @@ class DM2C_Driver(object):
         self.__id = idx
 
     def reset(self):
+
         self.write(DM2C.ControlWord, DM2C.ControlWord_InitParameter)
+        time.sleep(2)
         self.write(DM2C.ControlWord, DM2C.ControlWord_FactoryParameter)
+        time.sleep(2)
         self.__direction = DM2C.Positive
         self.setDirection(DM2C.Positive)
 

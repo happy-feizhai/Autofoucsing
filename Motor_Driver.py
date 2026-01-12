@@ -156,6 +156,8 @@ class LMS_LinearMovement(object):
         #设置限位开关
         self._drv.init_limit_inputs()
 
+        self._drv.write(LMS.ProfileJerkType, "0000")
+
         # 模式切换 & 使能
         self._drv.initPPMode()
         # 确保没有故障
@@ -357,13 +359,13 @@ if __name__ == '__main__':
     xaxis.setJogSpeed(Device_Stage.X_LowSpeed, Device_Stage.X_HighSpeed)
 
     # Z 轴（步进电机）
-    zaxis = Stage_LinearMovement(Device_Stage.Z)
-    zaxis.setModbus(modbus)
-    zaxis.reset()
-    zaxis.setRelativePositionPath()
-    zaxis.setAbsolutePositionPath()
-    zaxis.setSpeedPath()
-    zaxis.setJogSpeed(Device_Stage.Z_LowSpeed, Device_Stage.Z_HighSpeed)
+    # zaxis = Stage_LinearMovement(Device_Stage.Z)
+    # zaxis.setModbus(modbus)
+    # zaxis.reset()
+    # zaxis.setRelativePositionPath()
+    # zaxis.setAbsolutePositionPath()
+    # zaxis.setSpeedPath()
+    # zaxis.setJogSpeed(Device_Stage.Z_LowSpeed, Device_Stage.Z_HighSpeed)
 
     # Y 轴（伺服电机），如果已经接在 Driver_02 的地址上，也可以在这里简单测一下：
     # yaxis = Stage_LinearMovement(Device_Stage.Y)
@@ -373,4 +375,4 @@ if __name__ == '__main__':
     # yaxis.goRelativePosition(10000)
 
     # 简单运动测试：X 轴相对移动
-    xaxis.goRelativePosition(50000)
+    xaxis.goRelativePosition(-50000, wait=False)

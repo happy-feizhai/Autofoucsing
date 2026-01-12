@@ -513,7 +513,7 @@ def detect_pupil_contour_parallel(img: np.ndarray) -> Optional[Tuple[int, int, i
     # processed = preprocess_image(img)
 
     processed = preprocess_image(img)
-    r_threshold = 150
+    r_threshold = 2
 
     thresh_values = [30, 40, 50, 60]
     args_list = [(processed, thresh_val, r_threshold) for thresh_val in thresh_values]
@@ -542,7 +542,7 @@ def detect_pupil_contour(img: np.ndarray) -> Optional[Tuple[int, int, int]]:
     # print(f"预处理执行时间: {(end - start) * 1000:.2f} ms")
 
 
-    r_threshold = 150
+    r_threshold = 130
 
     # 多种阈值方法
     thresholds = []
