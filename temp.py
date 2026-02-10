@@ -181,9 +181,9 @@ class MotorController:
         },
         'y': {
             'driver': DM2C.Driver_02,
-            'high_speed': 500000,
-            'low_speed': 500000,
-            'path_speed': 500000,  # 假设与X轴相同，如果不同请修改
+            'high_speed': 50000, # useless
+            'low_speed': 50000, # useless
+            'path_speed': 300000,  # 假设与X轴相同，如果不同请修改
             'path_accel': 4294967295 * 0.9,
             'path_decel': 4294967295 * 0.9,
         },
@@ -1060,7 +1060,7 @@ class PupilCameraViewer(QWidget):
             self.camera.StartGrabbing(pylon.GrabStrategy_LatestImageOnly)
 
             # 启动定时器更新画面
-            self.timer.start(20)  # 20ms更新一次（50 FPS）
+            self.timer.start(20) # 20ms更新一次（50 FPS）
 
             self.sharpness_text.setText("Camera opened")
             self.open_button.setEnabled(False)

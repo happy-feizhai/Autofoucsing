@@ -809,64 +809,67 @@ if __name__ == "__main__":
     import serial
     ser = serial.Serial("COM7", 115200, timeout=0.1)
     modbus = ModbusRTU(ser)
+
     drv = LMS_Driver(modbus, b"\x02")  # 驱动器地址 1
 
+    amax = 4294967295
+    dmax = 4294967295
 
 
 
 
-    # 6091h:01h  传动比 分子 (040Eh)
-    num_hex = drv.read("040E", 2)  # 读 2 个寄存器（uint32）
-    num_val = int(num_hex, 16)  # 转成 Python 整数（无符号）
-
-    # 6091h:02h  传动比 分母 (0410h)
-    den_hex = drv.read("0410", 2)
-    den_val = int(den_hex, 16)
-
-    delta = drv.read("0406", 2)  # 读 2 个寄存器（uint32）
-    delta_val = int(delta, 16)  # 转成 Python 整数（无符号）
-    print(delta_val)
-
-    # 6091h:02h  传动比 分母 (0410h)
-    motor = drv.read("0408", 2)
-    motor_val = int(motor, 16)
-
-    print("传动比分子:", num_val)
-    print("传动比分母:", den_val)
-    print("编码器增量:", delta_val)
-    print("电机转数：", motor_val)
-
-    a = drv.getActualPosition()
-    print("position:", a)
+    # # 6091h:01h  传动比 分子 (040Eh)
+    # num_hex = drv.read("040E", 2)  # 读 2 个寄存器（uint32）
+    # num_val = int(num_hex, 16)  # 转成 Python 整数（无符号）
+    #
+    # # 6091h:02h  传动比 分母 (0410h)
+    # den_hex = drv.read("0410", 2)
+    # den_val = int(den_hex, 16)
+    #
+    # delta = drv.read("0406", 2)  # 读 2 个寄存器（uint32）
+    # delta_val = int(delta, 16)  # 转成 Python 整数（无符号）
+    # print(delta_val)
+    #
+    # # 6091h:02h  传动比 分母 (0410h)
+    # motor = drv.read("0408", 2)
+    # motor_val = int(motor, 16)
+    #
+    # print("传动比分子:", num_val)
+    # print("传动比分母:", den_val)
+    # print("编码器增量:", delta_val)
+    # print("电机转数：", motor_val)
+    #
+    # a = drv.getActualPosition()
+    # print("position:", a)
 
     #
-    # accel = int(amax * 0.8)
-    # decel = int(dmax * 0.8)
-    #
-    # drv.write("03FC", "%08X" % accel)  # 6083h 轮廓加速度
-    # drv.write("03FE", "%08X" % decel)  # 6084h 轮廓减速度
-    # drv.write("0400", "%08X" % decel)  # 6085h Quick stop 减速度，顺便一起拉高
-    #
-    # drv.initPPMode()
-    # drv.enableOperation()
-    # i = 0
-    # while i < 10:
-    #     drv.movePP(
-    #         target_pos=1000000,
-    #         velocity=5000000,  # 你算好的对应 3000rpm 的那个
-    #         accel=amax,
-    #         decel=dmax,
-    #         relative=True,
-    #         wait=True,
-    #     )
-    #     i += 1
-    #
-    #
-    #
-    #
-    # print("当前位置：", drv.getActualPosition())
-    #
-    # pass
+    accel = int(amax * 0.8)
+    decel = int(dmax * 0.8)
+
+    drv.write("03FC", "%08X" % accel)  # 6083h 轮廓加速度
+    drv.write("03FE", "%08X" % decel)  # 6084h 轮廓减速度
+    drv.write("0400", "%08X" % decel)  # 6085h Quick stop 减速度，顺便一起拉高
+
+    drv.initPPMode()
+    drv.enableOperation()
+    i = 0
+
+    while i < 10:
+        drv.movePP(
+            target_pos=233124592 + 1000000,
+            velocity=50000,  # 你算好的对应 3000rpm 的那个
+            accel=amax,
+            decel=dmax,
+            relative=False,
+            wait=True,
+        )
+        i += 1
+
+
+
+
+    print("当前位置：", drv.getActualPosition())
+
 
 # if __name__ == "__main__":
 #     import serial

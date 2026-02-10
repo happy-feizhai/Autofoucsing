@@ -113,7 +113,7 @@ class LMS_LinearMovement(object):
         self._drv = LMS_Driver(idx)
 
         # 保存路径/速度参数（单位直接沿用你 AXIS_CONFIG 里的数值）
-        self.abs_speed = 500000
+        self.abs_speed = 50000
         self.abs_accel = 4294967295
         self.abs_decel = 4294967295
 
