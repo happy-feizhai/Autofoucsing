@@ -8,8 +8,9 @@ from PySide6.QtWidgets import *
 from PySide6.QtGui import QImage, QPixmap, QIntValidator
 from PySide6.QtCore import QTimer, Qt
 
-from pypylon import pylon
 import cv2
+import numpy as np
+import mvsdk
 
 from dm2c import DM2C, DM2C_Driver, ModbusRTU
 from Motor_Driver import Stage_LinearMovement
@@ -30,7 +31,12 @@ class SimpleCameraMotorController(QWidget):
 
         # 相机
         self.camera = None
+        self.camera_cap = None
+        self.camera_is_mono = True
+        self.camera_frame_buffer = None
+        self.camera_frame_buffer_size = 0
         self.timer = QTimer(self)
+        self.timer.timeout.connect(self.update_frame)
         self.current_image = None
 
         # 电机
@@ -55,12 +61,6 @@ class SimpleCameraMotorController(QWidget):
         # === 相机参数设置 ===
         control_panel.addWidget(QLabel("=== 相机参数 ==="))
 
-        # 曝光模式
-        control_panel.addWidget(QLabel("曝光模式:"))
-        self.exposure_mode_combo = QComboBox()
-        self.exposure_mode_combo.addItems(["Timed", "TriggerWidth"])
-        control_panel.addWidget(self.exposure_mode_combo)
-
         # 曝光时间
         control_panel.addWidget(QLabel("曝光时间 (μs):"))
         self.exposure_time_edit = QLineEdit("10000")
@@ -70,14 +70,8 @@ class SimpleCameraMotorController(QWidget):
         # 自动曝光
         control_panel.addWidget(QLabel("自动曝光:"))
         self.auto_exposure_combo = QComboBox()
-        self.auto_exposure_combo.addItems(["Off", "Once", "Continuous"])
+        self.auto_exposure_combo.addItems(["Off", "On"])
         control_panel.addWidget(self.auto_exposure_combo)
-
-        # 自动增益
-        control_panel.addWidget(QLabel("自动增益:"))
-        self.auto_gain_combo = QComboBox()
-        self.auto_gain_combo.addItems(["Off", "Once", "Continuous"])
-        control_panel.addWidget(self.auto_gain_combo)
 
         # 增益值
         control_panel.addWidget(QLabel("增益:"))
@@ -189,15 +183,34 @@ class SimpleCameraMotorController(QWidget):
     def open_camera(self):
         """打开相机"""
         try:
-            self.camera = pylon.InstantCamera(pylon.TlFactory.GetInstance().CreateFirstDevice())
-            self.camera.Open()
+            if self.camera is not None:
+                self.close_camera()
 
-            # 设置默认参数
+            dev_list = mvsdk.CameraEnumerateDevice()
+            if len(dev_list) < 1:
+                raise RuntimeError("No camera was found")
+
+            dev_info = dev_list[0]
+            self.camera = mvsdk.CameraInit(dev_info, -1, -1)
+            self.camera_cap = mvsdk.CameraGetCapability(self.camera)
+            self.camera_is_mono = (self.camera_cap.sIspCapacity.bMonoSensor != 0)
+
+            if self.camera_is_mono:
+                mvsdk.CameraSetIspOutFormat(self.camera, mvsdk.CAMERA_MEDIA_TYPE_MONO8)
+            else:
+                mvsdk.CameraSetIspOutFormat(self.camera, mvsdk.CAMERA_MEDIA_TYPE_BGR8)
+
+            mvsdk.CameraSetTriggerMode(self.camera, 0)
+            mvsdk.CameraPlay(self.camera)
+
+            self.camera_frame_buffer_size = (
+                self.camera_cap.sResolutionRange.iWidthMax *
+                self.camera_cap.sResolutionRange.iHeightMax *
+                (1 if self.camera_is_mono else 3)
+            )
+            self.camera_frame_buffer = mvsdk.CameraAlignMalloc(self.camera_frame_buffer_size, 16)
+
             self.set_default_parameters()
-
-            self.camera.StartGrabbing(pylon.GrabStrategy_LatestImageOnly)
-
-            self.timer.timeout.connect(self.update_frame)
             self.timer.start(30)
 
             self.open_camera_btn.setEnabled(False)
@@ -205,92 +218,129 @@ class SimpleCameraMotorController(QWidget):
             self.status_label.setText("相机已打开")
 
         except Exception as e:
+            self.camera = None
+            self.camera_cap = None
+            self.camera_frame_buffer = None
             QMessageBox.critical(self, "错误", f"打开相机失败: {str(e)}")
 
     def close_camera(self):
         """关闭相机"""
         if self.camera:
             self.timer.stop()
-            self.camera.StopGrabbing()
-            self.camera.Close()
+            try:
+                mvsdk.CameraUnInit(self.camera)
+            except Exception:
+                pass
             self.camera = None
 
-            self.open_camera_btn.setEnabled(True)
-            self.close_camera_btn.setEnabled(False)
-            self.status_label.setText("相机已关闭")
+        if self.camera_frame_buffer is not None:
+            try:
+                mvsdk.CameraAlignFree(self.camera_frame_buffer)
+            except Exception:
+                pass
+            self.camera_frame_buffer = None
+
+        self.camera_cap = None
+        self.camera_frame_buffer_size = 0
+        self.current_image = None
+
+        self.open_camera_btn.setEnabled(True)
+        self.close_camera_btn.setEnabled(False)
+        self.status_label.setText("相机已关闭")
 
     def set_default_parameters(self):
         """设置默认相机参数"""
         try:
-            # 设置为默认值
-            self.camera.ExposureAuto.SetValue("Off")
-            self.camera.ExposureMode.SetValue("Timed")
-            self.camera.ExposureTime.SetValue(10000)
-            self.camera.GainAuto.SetValue("Off")
-            self.camera.Gain.SetValue(0)
+            if self.camera is None:
+                return
 
-            # 更新UI显示
-            self.exposure_mode_combo.setCurrentText("Timed")
+            mvsdk.CameraSetAeState(self.camera, 0)
+            mvsdk.CameraSetExposureTime(self.camera, 10000)
+            try:
+                mvsdk.CameraSetAnalogGain(self.camera, 0)
+            except Exception:
+                pass
+
             self.exposure_time_edit.setText("10000")
             self.auto_exposure_combo.setCurrentText("Off")
-            self.auto_gain_combo.setCurrentText("Off")
             self.gain_edit.setText("0")
 
         except Exception as e:
             print(f"设置默认参数失败: {str(e)}")
 
     def set_camera_parameters(self):
-        """设置相机参数"""
+        """设置相机参数（MindVision版本）"""
         if self.camera is None:
             QMessageBox.warning(self, "警告", "请先打开相机")
             return
 
         try:
-            # 设置自动曝光
-            self.camera.ExposureAuto.SetValue(self.auto_exposure_combo.currentText())
+            auto_exposure = self.auto_exposure_combo.currentText()
+            exposure_time = int(self.exposure_time_edit.text())
+            gain_value = int(float(self.gain_edit.text()))
 
-            # 如果关闭自动曝光，则设置手动曝光参数
-            if self.camera.ExposureAuto.GetValue() == "Off":
-                self.camera.ExposureMode.SetValue(self.exposure_mode_combo.currentText())
-                if self.camera.ExposureMode.GetValue() == "Timed":
-                    exposure_time = int(self.exposure_time_edit.text())
-                    self.camera.ExposureTime.SetValue(exposure_time)
-
-            # 设置增益
-            self.camera.GainAuto.SetValue(self.auto_gain_combo.currentText())
-            if self.camera.GainAuto.GetValue() == "Off":
-                gain_value = float(self.gain_edit.text())
-                self.camera.Gain.SetValue(gain_value)
+            if auto_exposure == "Off":
+                mvsdk.CameraSetAeState(self.camera, 0)
+                mvsdk.CameraSetExposureTime(self.camera, exposure_time)
+                try:
+                    mvsdk.CameraSetAnalogGain(self.camera, gain_value)
+                except Exception:
+                    pass
+            else:
+                mvsdk.CameraSetAeTarget(self.camera, 130)
+                mvsdk.CameraSetAeExposureRange(self.camera, 1000.0, 1000000.0)
+                cap = mvsdk.CameraGetCapability(self.camera)
+                gain_min = cap.sExposeDesc.uiAnalogGainMin
+                gain_max = cap.sExposeDesc.uiAnalogGainMax
+                mvsdk.CameraSetAeAnalogGainRange(self.camera, gain_min, gain_max)
+                mvsdk.CameraSetAeState(self.camera, 1)
 
             self.status_label.setText("相机参数设置成功")
 
         except Exception as e:
             QMessageBox.critical(self, "错误", f"设置参数失败: {str(e)}")
-            self.status_label.setText(f"参数设置失败")
+            self.status_label.setText("参数设置失败")
 
     def update_frame(self):
         """更新画面"""
+        if self.camera is None or self.camera_frame_buffer is None:
+            return
+
         try:
-            grab_result = self.camera.RetrieveResult(100, pylon.TimeoutHandling_Return)
-            if grab_result and grab_result.GrabSucceeded():
-                img = grab_result.Array
-                self.current_image = img.copy()
+            pRawData, FrameHead = mvsdk.CameraGetImageBuffer(self.camera, 200)
+            try:
+                mvsdk.CameraImageProcess(self.camera, pRawData, self.camera_frame_buffer, FrameHead)
+            finally:
+                mvsdk.CameraReleaseImageBuffer(self.camera, pRawData)
 
-                # 显示图像
-                if len(img.shape) == 2:  # 灰度图
-                    h, w = img.shape
-                    q_img = QImage(img.data, w, h, w, QImage.Format_Grayscale8)
-                else:  # 彩色图
-                    img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-                    h, w, ch = img_rgb.shape
-                    q_img = QImage(img_rgb.data, w, h, ch * w, QImage.Format_RGB888)
+            frame_data = (mvsdk.c_ubyte * FrameHead.uBytes).from_address(self.camera_frame_buffer)
+            img = np.frombuffer(frame_data, dtype=np.uint8)
 
-                pixmap = QPixmap.fromImage(q_img)
-                scaled = pixmap.scaled(self.image_label.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation)
-                self.image_label.setPixmap(scaled)
+            if self.camera_is_mono:
+                img = img.reshape((FrameHead.iHeight, FrameHead.iWidth))
+            else:
+                img = img.reshape((FrameHead.iHeight, FrameHead.iWidth, 3))
 
-                grab_result.Release()
-        except:
+            img = np.flip(img, 0)
+            img = img.copy()
+            self.current_image = img
+
+            if len(img.shape) == 2:
+                h, w = img.shape
+                q_img = QImage(img.data, w, h, w, QImage.Format_Grayscale8)
+            else:
+                img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+                h, w, ch = img_rgb.shape
+                q_img = QImage(img_rgb.data, w, h, ch * w, QImage.Format_RGB888)
+
+            pixmap = QPixmap.fromImage(q_img)
+            scaled = pixmap.scaled(self.image_label.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation)
+            self.image_label.setPixmap(scaled)
+
+        except mvsdk.CameraException as e:
+            if e.error_code != mvsdk.CAMERA_STATUS_TIME_OUT:
+                print(f"update_frame error: {e.error_code}, {e.message}")
+        except Exception:
             pass
 
     def connect_motor(self):

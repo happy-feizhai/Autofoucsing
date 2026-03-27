@@ -103,7 +103,7 @@ class AutoFocusStateMachine(QObject):
             'improvement_threshold': 0,  # 改善阈值
 
 
-           'fine_focus_scan_range': 12.0,  # 连续扫描总范围 (mm)
+           'fine_focus_scan_range': 24.0,  # 连续扫描总范围 (mm)
             'fine_focus_sample_period': 0.03, # 采样周期 (s)，比如 50ms
             'fine_focus_settle_time': 0.05  # 起始/停止时的静置时间 (s)
 
@@ -503,12 +503,12 @@ class AutoFocusStateMachine(QObject):
                     axis_y.stop()
                     return None, None
 
-                now = time.time()
+                # now = time.time()
                 # 控制采样频率
-                if now - last_sample_t < sample_period:
-                    time.sleep(0.001)
-                    continue
-                last_sample_t = now
+                # if now - last_sample_t < sample_period:
+                #     time.sleep(0.001)
+                #     continue
+                # last_sample_t = now
 
                 # 读当前 Y 位置（mm）
                 current_y = self._get_y_mm()
@@ -678,12 +678,12 @@ class AutoFocusStateMachine(QObject):
                     axis_y.stop()
                     return None, None
 
-                now = time.time()
-                # 控制采样频率
-                if now - last_sample_t < sample_period:
-                    time.sleep(0.001)
-                    continue
-                last_sample_t = now
+                # now = time.time()
+                # # 控制采样频率
+                # if now - last_sample_t < sample_period:
+                #     time.sleep(0.001)
+                #     continue
+                # last_sample_t = now
 
                 # 读当前 Y 位置（mm）
                 current_y = self._get_y_mm()

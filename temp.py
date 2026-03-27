@@ -18,8 +18,7 @@ from PySide6.QtWidgets import *
 from PySide6.QtGui import QImage, QPixmap, QIntValidator, QDoubleValidator
 from PySide6.QtCore import QTimer, Qt
 
-# Basler相机相关导入
-from pypylon import pylon
+import mvsdk
 
 # 设置Qt平台插件路径
 if hasattr(sys, '_MEIPASS'):
@@ -183,7 +182,7 @@ class MotorController:
             'driver': DM2C.Driver_02,
             'high_speed': 50000, # useless
             'low_speed': 50000, # useless
-            'path_speed': 300000,  # 假设与X轴相同，如果不同请修改
+            'path_speed': 300000 * 0.5,  # 假设与X轴相同，如果不同请修改
             'path_accel': 4294967295 * 0.9,
             'path_decel': 4294967295 * 0.9,
         },
@@ -542,7 +541,7 @@ def detect_pupil_contour(img: np.ndarray) -> Optional[Tuple[int, int, int]]:
     # print(f"预处理执行时间: {(end - start) * 1000:.2f} ms")
 
 
-    r_threshold = 130
+    r_threshold = 120
 
     # 多种阈值方法
     thresholds = []
@@ -655,7 +654,12 @@ class PupilCameraViewer(QWidget):
         self.setGeometry(100, 100, 1200, 800)
 
         # 相机相关变量
-        self.camera = None
+        self.camera = None  # MindVision 相机句柄
+        self.camera_cap = None  # 相机能力描述
+        self.camera_is_mono = True  # 是否黑白相机
+        self.camera_frame_buffer = None  # ISP输出缓冲区地址
+        self.camera_frame_buffer_size = 0  # 缓冲区大小
+
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.update_frame)
         self.pupil_detection_mode = False  # 瞳孔检测模式标志
@@ -727,12 +731,7 @@ class PupilCameraViewer(QWidget):
         # 相机参数控制
         left_column.addWidget(QLabel("=== Camera Parameters Setup ==="))
 
-        # 曝光模式
-        self.exposure_mode_label = QLabel("Exposure Mode:")
-        self.exposure_mode_combo = QComboBox()
-        self.exposure_mode_combo.addItems(["Timed", "TriggerWidth"])
-        left_column.addWidget(self.exposure_mode_label)
-        left_column.addWidget(self.exposure_mode_combo)
+
 
         # 曝光时间
         self.exposure_time_label = QLabel("Exposure Time (us):")
@@ -744,16 +743,11 @@ class PupilCameraViewer(QWidget):
         # 自动曝光
         self.auto_exposure_label = QLabel("Auto Exposure:")
         self.auto_exposure_combo = QComboBox()
-        self.auto_exposure_combo.addItems(["Off", "Once", "Continuous"])
+        self.auto_exposure_combo.addItems(["Off","On"])
         left_column.addWidget(self.auto_exposure_label)
         left_column.addWidget(self.auto_exposure_combo)
 
-        # 自动增益
-        self.auto_gain_label = QLabel("Auto Gain:")
-        self.auto_gain_combo = QComboBox()
-        self.auto_gain_combo.addItems(["Off", "Once", "Continuous"])
-        left_column.addWidget(self.auto_gain_label)
-        left_column.addWidget(self.auto_gain_combo)
+
 
         # 增益值
         self.gain_label = QLabel("Gain:")
@@ -1022,82 +1016,156 @@ class PupilCameraViewer(QWidget):
             self.motor_controller.move_to_relative("y", step)
 
     def set_camera_parameters(self):
-        """设置相机参数"""
+        """设置相机参数（MindVision版本）"""
         if self.camera is None:
             QMessageBox.warning(self, "Warning", "Please open camera first")
             return
 
         try:
-            # 设置自动曝光
-            self.camera.ExposureAuto.SetValue(self.auto_exposure_combo.currentText())
+            auto_exposure = self.auto_exposure_combo.currentText()
+            exposure_time = int(self.exposure_time_edit.text())
+            gain_value = int(float(self.gain_edit.text()))
 
-            # 如果关闭自动曝光，则设置手动曝光参数
-            if self.camera.ExposureAuto.GetValue() == "Off":
-                self.camera.ExposureMode.SetValue(self.exposure_mode_combo.currentText())
-                if self.camera.ExposureMode.GetValue() == "Timed":
-                    exposure_time = int(self.exposure_time_edit.text())
-                    self.camera.ExposureTime.SetValue(exposure_time)
+            # 1) 自动曝光
+            # MindVision 这里只保留 Off / 开启 自动曝光的逻辑
+            if auto_exposure == "Off":
+                mvsdk.CameraSetAeState(self.camera, 0)
+                mvsdk.CameraSetExposureTime(self.camera, exposure_time)
+            else:
 
-            # 设置增益
-            self.camera.GainAuto.SetValue(self.auto_gain_combo.currentText())
-            if self.camera.GainAuto.GetValue() == "Off":
-                gain_value = float(self.gain_edit.text())
-                self.camera.Gain.SetValue(gain_value)
+                mvsdk.CameraSetAeTarget(self.camera, 130)
+                mvsdk.CameraSetAeExposureRange(self.camera, 1000.0, 1000000.0)
+                cap = mvsdk.CameraGetCapability(self.camera)
 
+                gain_min = cap.sExposeDesc.uiAnalogGainMin
+                # print(gain_min)
+                gain_max = cap.sExposeDesc.uiAnalogGainMax
+                # print(gain_max)
+                mvsdk.CameraSetAeAnalogGainRange(self.camera, gain_min, gain_max)
+                mvsdk.CameraSetAeState(self.camera, 1)
+                # print(cap.sExposeDesc.fAnalogGainStep)
+            # 2) 手动增益
+            # 仅在关闭自动曝光时设置手动增益
+            # 若你希望始终允许设置增益，可去掉这个判断
+            if auto_exposure == "Off":
+                try:
+                    mvsdk.CameraSetAnalogGain(self.camera, gain_value)
+                except Exception:
+                    pass
             self.sharpness_text.setText("Parameters set successfully")
 
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to set parameters: {str(e)}")
+
     def start_camera(self):
-        """打开相机 - 修改版"""
+        """打开相机 - MindVision版本"""
         try:
+            # 若之前已经打开，先关闭
             if self.camera is not None:
-                self.camera.StopGrabbing()
-                self.camera.Close()
+                self.close_camera()
 
-            self.camera = pylon.InstantCamera(pylon.TlFactory.GetInstance().CreateFirstDevice())
-            self.camera.Open()
-            self.camera.StartGrabbing(pylon.GrabStrategy_LatestImageOnly)
+            # 枚举设备
+            dev_list = mvsdk.CameraEnumerateDevice()
+            if len(dev_list) < 1:
+                raise RuntimeError("No camera was found")
 
-            # 启动定时器更新画面
-            self.timer.start(20) # 20ms更新一次（50 FPS）
+            dev_info = dev_list[0]
+
+            # 初始化相机
+            self.camera = mvsdk.CameraInit(dev_info, -1, -1)
+
+            # 获取相机能力
+            self.camera_cap = mvsdk.CameraGetCapability(self.camera)
+
+            # 判断黑白/彩色
+            self.camera_is_mono = (self.camera_cap.sIspCapacity.bMonoSensor != 0)
+
+            # 设置ISP输出格式
+            if self.camera_is_mono:
+                mvsdk.CameraSetIspOutFormat(self.camera, mvsdk.CAMERA_MEDIA_TYPE_MONO8)
+            else:
+                mvsdk.CameraSetIspOutFormat(self.camera, mvsdk.CAMERA_MEDIA_TYPE_BGR8)
+
+            # 连续采集模式
+            mvsdk.CameraSetTriggerMode(self.camera, 0)
+
+            # 默认先关闭自动曝光，使用UI参数
+            mvsdk.CameraSetAeState(self.camera, 0)
+            mvsdk.CameraSetExposureTime(self.camera, int(self.exposure_time_edit.text()))
+
+            try:
+                mvsdk.CameraSetAnalogGain(self.camera, int(float(self.gain_edit.text())))
+            except Exception:
+                pass
+
+            # 开始采集
+            mvsdk.CameraPlay(self.camera)
+
+            # 分配ISP输出缓冲区
+            self.camera_frame_buffer_size = (
+                    self.camera_cap.sResolutionRange.iWidthMax *
+                    self.camera_cap.sResolutionRange.iHeightMax *
+                    (1 if self.camera_is_mono else 3)
+            )
+            self.camera_frame_buffer = mvsdk.CameraAlignMalloc(self.camera_frame_buffer_size, 16)
+
+            # 启动界面刷新
+            self.timer.start(33) # 33fps
 
             self.sharpness_text.setText("Camera opened")
             self.open_button.setEnabled(False)
             self.close_button.setEnabled(True)
 
         except Exception as e:
+            self.camera = None
+            self.camera_cap = None
+            self.camera_frame_buffer = None
             QMessageBox.critical(self, "Error", f"Cannot open camera: {str(e)}")
 
     def close_camera(self):
-        """关闭相机 - 修改版"""
-        if self.camera is not None:
-            # 停止检测线程
-            self.stop_detection_thread()
+        """关闭相机 - MindVision版本"""
+        # 停止检测线程
+        self.stop_detection_thread()
 
-            # 停止定时器和相机
-            self.timer.stop()
-            self.camera.StopGrabbing()
-            self.camera.Close()
+        # 停止定时器
+        self.timer.stop()
+
+        # 关闭相机
+        if self.camera is not None:
+            try:
+                mvsdk.CameraUnInit(self.camera)
+            except Exception:
+                pass
             self.camera = None
 
-            # 等待所有电机线程完成
-            for thread in self.motor_threads:
-                if thread.is_alive():
-                    thread.join(timeout=1)
-            self.motor_threads.clear()
+        # 释放缓冲区
+        if self.camera_frame_buffer is not None:
+            try:
+                mvsdk.CameraAlignFree(self.camera_frame_buffer)
+            except Exception:
+                pass
+            self.camera_frame_buffer = None
 
-            # 重置UI状态
-            self.sharpness_text.setText("Camera closed")
-            self.open_button.setEnabled(True)
-            self.close_button.setEnabled(False)
-            self.pupil_detection_mode = False
-            self.pupil_alignment_mode = False
-            self.pupil_detect_button.setText("Start Pupil Detection")
-            self.pupil_detect_button.setStyleSheet("QPushButton { background-color: #4CAF50; color: white; }")
-            self.pupil_align_button.setText("Start Pupil Alignment")
-            self.pupil_align_button.setStyleSheet("QPushButton { background-color: #2196F3; color: white; }")
-            self.pupil_align_button.setEnabled(False)
+        self.camera_cap = None
+        self.camera_frame_buffer_size = 0
+
+        # 等待所有电机线程完成
+        for thread in self.motor_threads:
+            if thread.is_alive():
+                thread.join(timeout=1)
+        self.motor_threads.clear()
+
+        # 重置UI状态
+        self.sharpness_text.setText("Camera closed")
+        self.open_button.setEnabled(True)
+        self.close_button.setEnabled(False)
+        self.pupil_detection_mode = False
+        self.pupil_alignment_mode = False
+        self.pupil_detect_button.setText("Start Pupil Detection")
+        self.pupil_detect_button.setStyleSheet("QPushButton { background-color: #4CAF50; color: white; }")
+        self.pupil_align_button.setText("Start Pupil Alignment")
+        self.pupil_align_button.setStyleSheet("QPushButton { background-color: #2196F3; color: white; }")
+        self.pupil_align_button.setEnabled(False)
 
     def connect_motor(self):
         """连接电机"""
@@ -1376,45 +1444,58 @@ class PupilCameraViewer(QWidget):
                 print(f"Motor stop error: {e}")
 
     def update_frame(self):
-        """更新相机画面 - 主线程负责获取所有图像"""
+        """更新相机画面 - 主线程负责获取所有图像（MindVision版本）"""
+        if self.camera is None or self.camera_frame_buffer is None:
+            return
+
         try:
-            # 只在这里获取图像
-            grab_result = self.camera.RetrieveResult(100, pylon.TimeoutHandling_Return)
+            pRawData, FrameHead = mvsdk.CameraGetImageBuffer(self.camera, 200)
 
-            if grab_result and grab_result.GrabSucceeded():
-                img = grab_result.Array.copy()  # 复制图像
-                grab_result.Release()
+            try:
+                # RAW -> MONO8 / BGR8
+                mvsdk.CameraImageProcess(self.camera, pRawData, self.camera_frame_buffer, FrameHead)
+            finally:
+                # 无论后面是否出错，都释放RAW buffer
+                mvsdk.CameraReleaseImageBuffer(self.camera, pRawData)
 
-                # 保存最新图像
-                with self.image_lock:
-                    self.latest_image = img
+            # 转成 numpy
+            frame_data = (mvsdk.c_ubyte * FrameHead.uBytes).from_address(self.camera_frame_buffer)
+            img = np.frombuffer(frame_data, dtype=np.uint8)
 
-                # 如果检测模式开启，将图像发送给检测线程
-                if self.pupil_detection_mode:
-                    try:
-                        # 尝试将图像放入队列（非阻塞）
-                        if self.image_queue.full():
-                            self.image_queue.get_nowait()  # 移除旧图像
-                        self.image_queue.put_nowait(img.copy())
-                    except queue.Full:
-                        pass
+            if self.camera_is_mono:
+                img = img.reshape((FrameHead.iHeight, FrameHead.iWidth))
+            else:
+                img = img.reshape((FrameHead.iHeight, FrameHead.iWidth, 3))
 
-                    # 尝试获取检测结果
-                    try:
-                        result = self.detection_queue.get_nowait()
-                        self.process_detection_result(result)
-                    except queue.Empty:
-                        # 没有新结果，显示当前图像
-                        self.display_current_state(img)
-                else:
-                    # 普通显示模式
-                    self.display_normal_image(img)
+            img = cv2.flip(img, 0)  # 旋转180°，同时上下+左右翻转
+            img = img.copy()  # 与SDK缓冲区脱离
 
-                self.update_performance_info()
+            # 保存最新图像
+            with self.image_lock:
+                self.latest_image = img
 
-            elif grab_result:
-                grab_result.Release()
+            # 如果检测模式开启，将图像发送给检测线程
+            if self.pupil_detection_mode:
+                try:
+                    if self.image_queue.full():
+                        self.image_queue.get_nowait()
+                    self.image_queue.put_nowait(img.copy())
+                except queue.Full:
+                    pass
 
+                try:
+                    result = self.detection_queue.get_nowait()
+                    self.process_detection_result(result)
+                except queue.Empty:
+                    self.display_current_state(img)
+            else:
+                self.display_normal_image(img)
+
+            self.update_performance_info()
+
+        except mvsdk.CameraException as e:
+            if e.error_code != mvsdk.CAMERA_STATUS_TIME_OUT:
+                print(f"Frame update error: {e.error_code}, {e.message}")
         except Exception as e:
             print(f"Frame update error: {e}")
 
@@ -1537,15 +1618,34 @@ class PupilCameraViewer(QWidget):
             if self.latest_image is not None:
                 return self.latest_image.copy()
 
-        # 如果没有缓存图像，直接从相机获取
+        if self.camera is None or self.camera_frame_buffer is None:
+            return None
+
         try:
-            grab_result = self.camera.RetrieveResult(1000, pylon.TimeoutHandling_ThrowException)
-            if grab_result and grab_result.GrabSucceeded():
-                img = grab_result.Array
-                grab_result.Release()
-                return img
-        except:
-            pass
+            pRawData, FrameHead = mvsdk.CameraGetImageBuffer(self.camera, 200)
+
+            try:
+                mvsdk.CameraImageProcess(self.camera, pRawData, self.camera_frame_buffer, FrameHead)
+            finally:
+                mvsdk.CameraReleaseImageBuffer(self.camera, pRawData)
+
+            frame_data = (mvsdk.c_ubyte * FrameHead.uBytes).from_address(self.camera_frame_buffer)
+            img = np.frombuffer(frame_data, dtype=np.uint8)
+
+            if self.camera_is_mono:
+                img = img.reshape((FrameHead.iHeight, FrameHead.iWidth))
+            else:
+                img = img.reshape((FrameHead.iHeight, FrameHead.iWidth, 3))
+
+            img = cv2.flip(img, 0)
+            return img.copy()
+
+        except mvsdk.CameraException as e:
+            if e.error_code != mvsdk.CAMERA_STATUS_TIME_OUT:
+                print(f"Get current image error: {e.error_code}, {e.message}")
+        except Exception as e:
+            print(f"Get current image error: {e}")
+
         return None
 
     def compute_global_sharpness(self, img):
